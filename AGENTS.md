@@ -11,7 +11,7 @@ The Windows notes further down describe the original author's setup. This sectio
 - Builds and boots: intro, title, menus, story mode, cutscenes and first combat render with correct colours on Vulkan (`fsi` path, AMD RADV tested).
 - **Blocker: intermittent freeze while loading a level** (see W1). The game is otherwise playable once loaded.
 - Performance: the user reports slow runs and once "a ton of graphical glitches" (W4, W5). Pinning the game to one core avoids W1 but performance is unacceptable, so that is not a fix.
-- Nothing from this Linux work is committed yet (see "Multi-agent setup" below before starting).
+- All work so far is committed on the `linux-port` branches (main repo and `extern/rexglue-sdk`), not pushed. See "Multi-agent setup".
 
 ### Build (Linux)
 
@@ -65,7 +65,7 @@ Claim a task by putting your agent name and date in **Owner** before starting, a
 | W4 | Linux performance measurement | | No fps counter on Vulkan yet (`sh_log_fps` is D3D12-only). Add a vblank/VdSwap rate log to the Vulkan path, measure headless at 720p/1080p, then profile (perf) a gameplay scene. |
 | W5 | "Ton of graphical glitches" (1 user run) | | Unreproduced. Capture PNGs every few seconds through a full load+gameplay run and compare against Xenia; check `vulkan_async_skip_incomplete_frames` and pipeline-compile pop-in first. |
 | W6 | Remaining missing private SDK patches | | See the Linux checkout note under "Local SDK patches": 11 (`[sh-uf]` continue mode) would speed up crash hunting; 24/16 are D3D12-only. |
-| W7 | Commit/branch plan | user | Prerequisite for multi-agent work; see below. |
+| W7 | Commit/branch plan | user | Done 2026-10-25: `linux-port` branches, local only. Pushing is the user's call. |
 | W8 | Port the level warp (`sh_warp`) | | The cvar exists (`src/main.cpp`, F5 row) but nothing reads it on this SDK: the original implementation was in the missing private `VdSwap_entry` patch (see "Dev tool: level warp"). Re-implement it port-side (e.g. a hook on a per-frame guest function calling `GameState::RequestLoadLevelByLevelName` `0x82795E48` with `*(0x82FFA3AC)`). Lets the harness hit every level load quickly (C2). |
 
 ### W1: level-load stale-block race (what is known)
@@ -105,8 +105,20 @@ Run each checkpoint headless with the harness and record the result (date, commi
 
 ### Multi-agent setup
 
-- **Prerequisite (W7): commit the current work first.** Most Linux fixes live as *uncommitted* changes inside the `extern/rexglue-sdk` submodule and the main repo. A new git worktree or clone won't have them. The user has to approve committing: an SDK branch (e.g. `linux-port`) committed in the submodule, then the main repo committed with the new submodule SHA.
-- **One worktree and one build directory per agent** (`git worktree add ../sh-<agent> <branch>`, then `git submodule update --init`). Each worktree needs its own `generated/` (codegen ~2.5 min) and full build (~15 min). Don't share `generated/` or a build directory between agents: codegen rewrites all 208 files and ninja relinks under other agents.
+- **Branches:** the work lives on `linux-port` in both the main repo and `extern/rexglue-sdk` (committed 2026-10-25, **not pushed**). The SDK commit exists only in the local submodule, so worktrees must fetch it from there.
+- **One worktree and one build directory per agent:**
+  ```bash
+  cd /mnt/sdb1/Games/splatterhouse-decomp
+  git worktree add -b <agent>/<task> ../sh-<agent> linux-port
+  cd ../sh-<agent>
+  git config submodule.extern/rexglue-sdk.url /mnt/sdb1/Games/splatterhouse-decomp/extern/rexglue-sdk
+  git -c protocol.file.allow=always submodule update --init extern/rexglue-sdk
+  git -C extern/rexglue-sdk submodule update --init --recursive   # SDK third-party deps, from their public URLs
+  ln -s /mnt/sdb1/Games/splatterhouse-decomp/game game
+  cmake --preset linux-amd64-relwithdebinfo && cmake --build out/build/linux-amd64-relwithdebinfo -j$(nproc)
+  ```
+  Each worktree needs its own `generated/` (codegen ~2.5 min, run by the first build) and full build (~15 min). Don't share `generated/` or a build directory between agents: codegen rewrites all 208 files and ninja relinks under other agents.
+- **SDK changes in a worktree:** commit them on a branch inside that worktree's `extern/rexglue-sdk`. To share them, fetch that branch into the main checkout's submodule (`git -C extern/rexglue-sdk fetch ../sh-<agent>/extern/rexglue-sdk <branch>`) and merge it into `linux-port` there, then commit the new submodule SHA in the main repo. Merge into `linux-port` only after the change passes C0 (and C1 if it touches W1).
 - `game/` (assets) is shared read-only: symlink it into each worktree (`ln -s /mnt/sdb1/Games/splatterhouse-decomp/game game`).
 - Pick a unique `DISPLAY_NUM` (and so a unique `RUN_DIR`) per agent. Run at most two headless games at once in total.
 - **Codegen changes are serialized:** announce them on the work board before touching `extern/rexglue-sdk/src/codegen/` or `config/codegen.toml`, because they change every generated file and conflict with everyone's builds.
