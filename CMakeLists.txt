@@ -23,6 +23,7 @@ set(SPLATTERHOUSE_SOURCES
     src/sh_60fps_hook.cpp
     src/sh_language_hook.cpp
     src/sh_unlock_hook.cpp
+    src/sh_warp_hook.cpp
     src/sh_uf_diag.cpp
     src/sh_stream_diag.cpp
     src/sh_xctd_cache_fix.cpp

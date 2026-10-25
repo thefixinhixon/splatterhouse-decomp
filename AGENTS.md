@@ -52,6 +52,7 @@ DISPLAY_NUM=91 tools/linux/headless_run.sh menu 60 30:Return 40:Return 50:space
   - ImageMagick `fx:mean.g` returns 0 on greyscale PNGs; use `identify -verbose`.
   - With log rotation on (the game's default) a crash flood pushes the start of the problem out of the log. The harness sets `--log_max_file_size_mb=2000`.
   - Each run maps a 4.8 GB `/dev/shm` file. It's unlinked at creation now (`memory_posix.cpp`), so killed runs don't leak; if `/dev/shm` ever fills up again, the game SIGBUSes on level load.
+  - **Boot is slower than the timeline above in a fresh worktree** (2026-10-25, agent-w8): the title screen appeared at ~35–40 s, so the default script's Start presses at 30/40 s were lost and C0 stalled on the title. Use `45:Return 60:Return 75:space 90:space 105:space 120:space` for C0 there (reaches Story mode at ~90 s, mask selection at ~120 s, 0 AV).
 
 ### Work board
 
@@ -66,7 +67,7 @@ Claim a task by putting your agent name and date in **Owner** before starting, a
 | W5 | "Ton of graphical glitches" (1 user run) | | Unreproduced. Capture PNGs every few seconds through a full load+gameplay run and compare against Xenia; check `vulkan_async_skip_incomplete_frames` and pipeline-compile pop-in first. |
 | W6 | Remaining missing private SDK patches | | See the Linux checkout note under "Local SDK patches": 11 (`[sh-uf]` continue mode) would speed up crash hunting; 24/16 are D3D12-only. |
 | W7 | Commit/branch plan | user | Done 2026-10-25: `linux-port` branches, local only. Pushing is the user's call. |
-| W8 | Port the level warp (`sh_warp`) | | The cvar exists (`src/main.cpp`, F5 row) but nothing reads it on this SDK: the original implementation was in the missing private `VdSwap_entry` patch (see "Dev tool: level warp"). Re-implement it port-side (e.g. a hook on a per-frame guest function calling `GameState::RequestLoadLevelByLevelName` `0x82795E48` with `*(0x82FFA3AC)`). Lets the harness hit every level load quickly (C2). |
+| W8 | Port the level warp (`sh_warp`) | agent-w8 2026-10-25 | **Done** on branch `agent-w8/warp` (not merged): `src/sh_warp_hook.cpp` overrides the guest present function `sub_822551A0` and writes the level index into `[*(0x831F6ED4)+152]`, which is what the frontend does when a chapter is picked. `--sh_warp=lvl2_shanty` / `lvl4_carnival` verified headless (the game's own loader logs `LoadLevel index=2 'lvl2_act1_shanty'` / `index=6 'lvl4_act1_carnival'`, screenshots show the Shanty and the Carnival, 0 AV). C0 still passes. Mechanics and gotchas in "Dev tool: level warp". |
 
 ### W1: level-load stale-block race (what is known)
 
@@ -358,9 +359,18 @@ The original `main`→crash chain is solved; the **UI/Scaleform GFx** init (XCTD
 
 ### Dev tool: level warp (`sh_warp`)
 
-- To **warm up the shader cache chapter by chapter** without playing them: cvar **`sh_warp`** (level name) → the runtime loads that level. **Level warp (dev)** row in the F5 menu (cycles `lvl1_manor_interior`, `lvl2_shanty`, `lvl3_manor_catacombs`, `lvl4_carnival`, `lvl5_manor_grounds`, `lvl7_manor_chapel`, `survival_arena`, `frontend`).
-- Implemented in `VdSwap_entry` (SDK, `xboxkrnl_video.cpp`): reads `sh_warp`, gets the global `GameState` (`*(0x82FFA3AC)`) and calls `GameState::RequestLoadLevelByLevelName` (`0x82795E48`, `r3=GameState`, `r4=name`) via `FunctionDispatcher::Execute` (guest thread; retries until the `GameState` exists and clears the cvar). **Splatterhouse-specific.** Verified: fires without crashing.
+- To **warm up the shader cache chapter by chapter** without playing them: cvar **`sh_warp`** (level name) → the game loads that level. **Level warp (dev)** row in the F5 menu (cycles `lvl1_manor_interior`, `lvl2_shanty`, `lvl3_manor_catacombs`, `lvl4_carnival`, `lvl5_manor_grounds`, `lvl7_manor_chapel`, `survival_arena`, `frontend`); the row calls `SetFlagByName("sh_warp", ...)`, so it uses the same path as `--sh_warp=<level>`.
 - Flow: in-game/menu → **F5** → **Level warp** → pick a level → wait for it to load → repeat. Then `tools\pack_shadercache.bat`.
+
+**Linux implementation (2026-10-25, `src/sh_warp_hook.cpp`).** The original Windows version lived in a private `VdSwap_entry` patch that this SDK doesn't have, and its `GameState+132` destination doesn't load anything in this build, so the request is issued port-side:
+
+- Hook: weak override of the guest present function **`sub_822551A0`** (the caller of `VdSwap`, once per frame on the guest thread) → `__imp__sub_822551A0` first, then the request. Nothing is patched in `generated/`.
+- The game-flow object is **`*(0x831F6ED4)`**. Its per-frame update `sub_82EF50A8(flow)` calls **`sub_82EF40C8(flow, index)`** for the index in **`[flow+152]`** — that field is what the frontend writes when the player picks a chapter, so writing it is the request. `sub_82EF40C8` takes **`[flow+232][index]`** (level entries, 120 of them; each entry has its inline name at **+48**, or `*(entry+836)` + 524 + 48 when nested) and starts the load: it resets `[GameState+132]` to -1, sets the language and hands the entry to the level manager (`0x831F6ED4`-relative globals: `+28404` manager, `+28372` flow).
+- **`*(0x82FFA3AC)+132` is a dead end**: `sub_82795E48(GameState*, name)` writes the index there and nothing in this build reads it — the level database it resolves names with (`*(0x831F4FBC)`) is an empty container (`count=0`, `array=0`) even in story mode, so `sub_82795E48` always logs "not found". Don't redo that path.
+- **Names**: entries are `lvl<chapter>_act<n>_<place>` (`lvl2_act1_shanty`), the chapters the game exposes are `lvl2_shanty`. The hook matches chapter prefix + place suffix (first act wins) and falls back to a substring match, so `survival_arena` → `Manor Lobby Survival Arena` and `frontend` → `FrontEnd`; exact entry names also work.
+- **Readiness gate**: the request is only issued when **`[flow+352] >= 3`** (observed flow states: 1 = boot, 2 = frontend loading, 3 = frontend, also 3 during the warped level). A request during boot hangs the game on the logo screen and it later dies with the W1 signature — that is why the gate exists. Retries are rate-limited to once per second while the cvar stays set; a resolved request clears `sh_warp` and logs `[sh-warp] requested level 'x' -> 'entry' (index N)`.
+- **Observed behaviour**: after the request the game plays its ~60–90 s shared intro sequence and then the level itself (verified: Shanty at 90–120 s, Carnival's blue-lit target area at 110 s), and returns to the frontend after roughly two minutes because no story session was started. Re-issuing `sh_warp` continues; this is enough for shader-cache warming but it is **not** a playable level (start story mode for that).
+- Verified 2026-10-25 headless (`DISPLAY_NUM=92`, no crash, no real pad): `LoadLevel index=2 name='lvl2_act1_shanty'` and `LoadLevel index=6 name='lvl4_act1_carnival'` logged by the game's own loader right after the request (temporary `sub_82EF40C8` hook, removed afterwards).
 
 ### (historical) Localization — first attempt, blocked
 
