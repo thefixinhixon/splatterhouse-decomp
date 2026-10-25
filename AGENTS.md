@@ -9,7 +9,7 @@ The Windows notes further down describe the original author's setup. This sectio
 ### Status (2026-10-25)
 
 - Builds and boots: intro, title, menus, story mode, cutscenes and first combat render with correct colours on Vulkan (`fsi` path, AMD RADV tested).
-- **Blocker: intermittent freeze while loading a level** (see W1). The game is otherwise playable once loaded.
+- **Intermittent freeze while loading a level (W1): fixed** and merged into `linux-port` (2026-10-25), see W1.
 - Performance: the user reports slow runs and once "a ton of graphical glitches" (W4, W5). Pinning the game to one core avoids W1 but performance is unacceptable, so that is not a fix.
 - All work so far is committed on the `linux-port` branches (main repo and `extern/rexglue-sdk`), not pushed. See "Multi-agent setup".
 
@@ -58,48 +58,50 @@ DISPLAY_NUM=91 tools/linux/headless_run.sh menu 60 30:Return 40:Return 50:space
 
 Claim a task by putting your agent name and date in **Owner** before starting, and keep **Notes** current. One owner per task. Tasks marked *codegen* regenerate `generated/`; only one agent may do that at a time (see Multi-agent setup).
 
+**Current split (2026-10-25), two agents:** Agent A "perf" owns W4 → C3 (`../sh-w4`, `DISPLAY_NUM=94`). Agent B "stability" owns C2 → W5 → W6 (`../sh-agent-b`, `DISPLAY_NUM=92`). Each agent runs one headless game at a time (two in total), edits only its own board rows, and plans no codegen changes (announce one here first if needed). Agent branches are committed locally; the user merges them into `linux-port`.
+
 | ID | Task | Owner | Notes |
 |---|---|---|---|
-| W1 | **Level-load stale-block race** (blocker) | | See W1 below. Exit: checkpoint C1. |
-| W2 | Interim mitigation for W1 without the single-core cost | | Idea: find the guest threads in the NIF streaming path (I/O thread runs `sub_8290DB88`, reader runs `sub_82991488`/`sub_82991388`) and pin only those to one host core via `XThread::SetActiveCpu`/`set_affinity_mask`, leaving render/GPU threads free. Must not regress fps. Exit: C1 with fps within 10% of unpinned. |
+| W1 | **Level-load stale-block race** (blocker) | agent-w1 (2026-10-25) | **Done**, merged into `linux-port` 2026-10-25 (with SDK `8b0d606`): stale XCTD completion signal makes `GetOverlappedResult` return while the read is pending; fix in `src/sh_overlapped_fix.cpp`. C1 passed 2026-10-25: 0/10 default, 0/10 `--ignore_thread_affinities=false` (was 3/3 crashing on the same branch without the fix). The merge also drops `src/sh_stream_diag.cpp` from the build. See W1 below. |
+| W2 | Interim mitigation for W1 without the single-core cost | | **Closed** 2026-10-25: superseded by the W1 fix. |
 | W3 | Rumble watchdog check on a real pad | user | `sh_rumble_timeout_ms` (SDL driver). Needs the user's controller; agents can't test it (rule 2). Expect `[sh-rumble]` in the log if a rumble gets stuck. |
-| W4 | Linux performance measurement | | No fps counter on Vulkan yet (`sh_log_fps` is D3D12-only). Add a vblank/VdSwap rate log to the Vulkan path, measure headless at 720p/1080p, then profile (perf) a gameplay scene. |
-| W5 | "Ton of graphical glitches" (1 user run) | | Unreproduced. Capture PNGs every few seconds through a full load+gameplay run and compare against Xenia; check `vulkan_async_skip_incomplete_frames` and pipeline-compile pop-in first. |
-| W6 | Remaining missing private SDK patches | | See the Linux checkout note under "Local SDK patches": 11 (`[sh-uf]` continue mode) would speed up crash hunting; 24/16 are D3D12-only. |
+| W4 | Linux performance measurement + first fixes | Agent A "perf" (2026-10-25) | Branch `agent-w4/perf` (worktree `../sh-w4`), `DISPLAY_NUM=94`. `[sh-perf]` log on SDK `b3c9fe7` (that branch only; more SDK changes uncommitted in the worktree). Plan: commit the in-flight SDK work, measure baseline fps headless (720p/1080p, first combat arena, `sh_warp`), `perf record` hotspots (separate the Xvfb/sw-WSI copy cost), first fixes with an fps re-measure + C0 each. Exit: C3; merge into `linux-port` after C0 + C1. Owns `extern/rexglue-sdk/src/{graphics,ui,core/perf}/**`. |
+| W5 | "Ton of graphical glitches" (1 user run) | Agent B "stability" (2026-10-25) | Worktree `../sh-agent-b`, branch `agent-b/soak` from `linux-port`, `DISPLAY_NUM=92`. Order: **C2 soak** first (15-min story run + every level via `--sh_warp`, PNG every ~5 s), then W5 from that PNG series (check `vulkan_async_skip_incomplete_frames` and pipeline-compile pop-in first; compare with Xenia captures from the user). Diagnose before editing `src/graphics/vulkan/**`: Agent A also edits `vulkan/command_processor.cpp`, so coordinate or rebase onto A's SDK branch. |
+| W6 | Remaining missing private SDK patches | Agent B "stability" (2026-10-25) | After C2/W5. Port 11 (`[sh-uf]` continue mode, `src/system/function_dispatcher.cpp`, runtime only, no codegen); 24/16 are D3D12-only, skip. Merge after C0. |
 | W7 | Commit/branch plan | user | Done 2026-10-25: `linux-port` branches, local only. Pushing is the user's call. |
-| W8 | Port the level warp (`sh_warp`) | agent-w8 2026-10-25 | **Done** on branch `agent-w8/warp` (not merged): `src/sh_warp_hook.cpp` overrides the guest present function `sub_822551A0` and writes the level index into `[*(0x831F6ED4)+152]`, which is what the frontend does when a chapter is picked. `--sh_warp=lvl2_shanty` / `lvl4_carnival` verified headless (the game's own loader logs `LoadLevel index=2 'lvl2_act1_shanty'` / `index=6 'lvl4_act1_carnival'`, screenshots show the Shanty and the Carnival, 0 AV). C0 still passes. Mechanics and gotchas in "Dev tool: level warp". |
+| W8 | Port the level warp (`sh_warp`) | agent-w8 2026-10-25 | **Done**, merged into `linux-port` (`95c51de`): `src/sh_warp_hook.cpp` overrides the guest present function `sub_822551A0` and writes the level index into `[*(0x831F6ED4)+152]`, which is what the frontend does when a chapter is picked. `--sh_warp=lvl2_shanty` / `lvl4_carnival` verified headless (the game's own loader logs `LoadLevel index=2 'lvl2_act1_shanty'` / `index=6 'lvl4_act1_carnival'`, screenshots show the Shanty and the Carnival, 0 AV). C0 still passes. Mechanics and gotchas in "Dev tool: level warp". |
 
-### W1: level-load stale-block race (what is known)
+### W1: level-load stale-block race (root cause found and fixed, 2026-10-25, agent-w1)
 
-- **Symptom:** about 95 s into the default script (first level load) the game freezes with thousands of `Unhandled guest access violation: write of guest 0x00000000`. Sometimes it's preceded by `BaseHeap::Alloc failed to find contiguous range: ... request 20010000 bytes`; sometimes the variant is a null read (`0x4`/`0x8`). Rate: about 50% of runs, about 80% with `--ignore_thread_affinities=false`, 0/4 with `PIN=2`.
+- **Symptom:** about 95 s into the default script (first level load) the game freezes with thousands of `Unhandled guest access violation: write of guest 0x00000000`. Sometimes it's preceded by `BaseHeap::Alloc failed to find contiguous range: ... request 20010000 bytes`; sometimes the variant is a null read (`0x4`/`0x8`). Rate before the fix: about 50% of runs, 80-100% with `--ignore_thread_affinities=false`, 0/4 with `PIN=2`.
 - **Chain:** `.nif` loader `sub_8233B6A8` → `sub_8233E2A8` → `sub_822B3E98` → per-block loaders (e.g. `sub_8233D480`, a "count + 4-byte entries" deserializer) → the vector grows to 128M entries (`sub_8247FF20` asks for 512 MB) → alloc fails → null write in a loop.
-- **Root cause (measured):** the bytes handed to the NIF parser are wrong. A capture of a bad run against a single-core reference of the same file (`g_lvl1_act1_sec_a_lobby.nif`) shows **exactly one 64 KB block replaced by the previous 64 KB block** (`bad[0x4E2000:+64K] == ref[0x4D2000:+64K]`), with correct data again afterwards. The parser then desyncs.
-- **Pipeline:**
-  - The engine's streaming reader (`NiFile`-like object; read `sub_82991488`, refill `sub_82991388`) pops output descriptors from an "LfQu" lock-free queue (magic `0x4C665175`; push `sub_822A4178`, pop `sub_822A4580`) and releases them back.
-  - An I/O thread (`sub_8290DB88` → `sub_8290D9B8`) pops free descriptors, runs zlib `inflate(strm, Z_SYNC_FLUSH)` (`sub_8274C760`; `z_stream` with next_in +0, avail_in +4, next_out +12, avail_out +16, current input chunk descriptor at +56) into `[desc+8]`, sets `[desc+0]` = bytes produced and pushes the descriptor to the filled queue.
-  - Descriptor layout: +0 size, +4 consumed offset, +8 buffer. **For large reads the reader points +8 at its own destination** (zero-copy), so buffers are not fixed.
-  - The compressed input chunks come from the file layer: XAPI XCTD (`sub_829F5E70` → `sub_829F2370`, request ring `sub_829F4490`/`sub_829F4578`, cache `sub_829F4B58`/`sub_829F4C80`) over `NtReadFile`.
+- **Data symptom (measured earlier):** exactly one 64 KB block of the stream replaced by the previous 64 KB block (`bad[0x4E2000:+64K] == ref[0x4D2000:+64K]` for `g_lvl1_act1_sec_a_lobby.nif`), correct data again afterwards.
+- **Root cause: a stale signal on the XCTD completion event makes `GetOverlappedResult` return while the read is still pending.**
+  - The NIF I/O thread (`sub_8290DB88`) streams the file **uncompressed** (`[streamer+265] == 0`) with **2 descriptors** in async mode: `ReadFile` (`sub_82231F88`) into one descriptor (`sub_8290D7D8`), then `GetOverlappedResult` (`sub_829F0958`, via `sub_8290D890`) and push to the filled queue.
+  - Its `OVERLAPPED.hEvent` is 0 (memset in `sub_8290D280`), so `GetOverlappedResult` waits on the handle itself. For XCTD files that handle is a **manual-reset `XEvent`** owned by the XCTD layer, not an `XFile`.
+  - `ReadFile` → XCTD `sub_829F2370` sets the IOSB to `STATUS_PENDING`, `NtClearEvent(handle)`, and queues the request to the XCTD worker (`sub_829F3910` → `sub_829F3178`). The worker decompresses, writes the IOSB (status, then information), then `NtSetEvent(handle)`.
+  - `GetOverlappedResult` only waits if the status is pending, and doesn't re-check after the wait. If the I/O thread sees request N already complete, skips the wait and issues request N+1 (`NtClearEvent`) **before** the worker's `NtSetEvent` for N lands, the event stays signalled during N+1. The wait returns at once, the status is still `0x103`, and `GetOverlappedResult` returns success with 0 bytes.
+  - From there each completion is matched to the wrong request: the I/O thread hands the reader a descriptor whose buffer was never written, which still holds the previous 64 KB block (2 descriptors alternate). Measured with a cheap probe: every crashing run had `GetOverlappedResult ... status 103->103 got 0 ret 1` followed by a run of "read completed but buffer unchanged".
+  - Why only on PC: on the console the worker isn't preempted by the I/O thread between writing the IOSB and `NtSetEvent` (guest thread priorities). On the host it is, most often when affinities are honoured and both threads share a core.
+- **Fix:** `src/sh_overlapped_fix.cpp` overrides `sub_829F0958`. When the wait returns with the status still pending, it resets the event and calls the original again. The original re-reads the status first and the worker writes the status before signalling, so no completion is lost and nothing spins (2-7 stale signals per run, one reset each; log `[sh-ovl]` at powers of two). SDK side, only an unrelated bug found on the way: `XEvent::Initialize` never stored `manual_reset_` (wrong `Query`/`Save` results).
 - **Ruled out** (don't redo):
-  - The LfQu queues: no descriptor is ever double-pushed or popped from the wrong queue in crashing runs. All list ops use 64-bit counted pointers (`ldarx`/`stdcx.`), so value-CAS emulation is ABA-safe there.
-  - Two threads inflating one `z_stream` at once (never seen in crashing runs).
+  - The LfQu queues: Michael-Scott FIFO (`sub_822A3DD0`), no descriptor is ever double-pushed or popped from the wrong queue in crashing runs. All list ops use 64-bit counted pointers (`ldarx`/`stdcx.`), so value-CAS emulation is ABA-safe there.
+  - Two threads inflating one `z_stream` at once (never seen in crashing runs). The crashing stream isn't zlib-compressed at all.
   - `RtlEnter/LeaveCriticalSection`, APC delivery (`ExecuteTrap` saves/restores context), `NtReadFile`/`NtReadFileScatter`, completion ports (unused by the game), zeroing on commit. All match Xenia.
   - Missing memory barriers: codegen now emits `atomic_thread_fence` for `sync`, compiler fences for `lwsync`/`eieio`, and an acquire load for `lwarx`/`ldarx`. Guest loads/stores were already `volatile`.
   - The XCTD cache reader-count race: it's real, and `src/sh_xctd_cache_fix.cpp` fixes it, but it is not this bug.
+  - The XCTD compressed-block prefetch (`sub_829F40A8`/`sub_829F3FD8`): the SDK's `NtReadFile` completes synchronously, so the slot buffers are always filled before use.
+  - File-object event semantics (`NtSetEvent`/`NtClearEvent` on an `XFile` handle are no-ops in the SDK, and `XFile::Read` signals the file even when the caller passed its own event): real differences from NT, but this path never waits on an `XFile`. Changing them made no difference.
   - User settings and the 1 kHz vblank (`vsync=false`).
-- **Heisenbug warning:** heavy instrumentation (hashing whole buffers, locks around inflate) makes it disappear. Keep probes to a few loads and stores per event.
-- **Open leads:**
-  - (a) Trace one descriptor through release → I/O pop → inflate → push → reader pop with **cheap** per-event records (sequence number, thread, `[desc+0/+4/+8]`, `z_stream` next_out/avail_out before and after inflate) into a lock-free ring, dumped only when `sub_8247FF20` sees a huge reserve.
-  - (b) Check whether the reader can release a descriptor (or re-point `+8`) while the I/O thread is still inflating into it (zero-copy path).
-  - (c) Check whether the compressed input descriptor at `z_stream+56` can be released or refilled while still being consumed.
-  - (d) Compare with the game under Xenia Canary (the user has it), which doesn't show the bug: timing, or Xenia's `stwcx` reservation semantics.
-- **Tools:** `src/sh_stream_diag.cpp` (not built; add it to `SPLATTERHOUSE_SOURCES` to use) hooks the parser and dumps the bytes it received. Run with `SH_NIF_DUMP_DIR=<dir>` for bad runs and `SH_NIF_REF=<file.nif> PIN=2` for a single-core reference, then diff the `.bin` files (`.mask` marks captured bytes). It also contains the queue-integrity and descriptor probes used above; strip them before reuse.
+- **Heisenbug warning:** heavy instrumentation hides it. `src/sh_stream_diag.cpp` was actually **compiled into the `linux-port` build** (mutex + hash map on every queue push/pop and inflate, a copy of every read); this branch takes it out of `SPLATTERHOUSE_SOURCES`.
+- **Tools:** `src/sh_w1_probe.cpp` (not built): samples 8 words of the descriptor buffer when a read starts and completes, and logs `[w1] read completed but buffer unchanged` only for full-size reads. Hits at `pos 00000000` with no cascade are benign (same file read again into the same buffer). `src/sh_stream_diag.cpp` (not built): parser byte dumps (`SH_NIF_DUMP_DIR`, `SH_NIF_REF` + `PIN=2`) and the old heavy queue probes.
 
 ### Checkpoints
 
 Run each checkpoint headless with the harness and record the result (date, commit or diff hash, numbers) in the work board Notes.
 
 - **C0: Boot.** `RUNS=1` reaches the Story mode menu (`_50`/`_60` PNGs), no `guest-AV`, no `real-pads-opened`. Passing today.
-- **C1: Level load is stable.** `RUNS=10 GDB=1` with the default script **and** `RUNS=10 GDB=1 EXTRA=--ignore_thread_affinities=false`: 0 crashes, and the `_end.png` shows gameplay. (Today: ~5/10 and ~8/10.)
+- **C1: Level load is stable.** `RUNS=10 GDB=1` with the default script **and** `RUNS=10 GDB=1 EXTRA=--ignore_thread_affinities=false`: 0 crashes, and the `_end.png` shows gameplay. (Before the fix: ~5/10 and ~8/10. With the W1 fix, 2026-10-25: 0/10 and 0/10; all `_end.png` frames are past the load, in the level's opening cutscene.)
 - **C2: Soak.** One 15-minute run with a key script that keeps playing (attack/move presses), no crash. Then load every level (needs W8).
 - **C3: Performance.** fps measured (W4) at 1080p in the first combat arena, recorded here, with no regression against the previous checkpoint.
 - **C4: User sign-off.** The user plays a session with their controller (also covers W3).
@@ -199,6 +201,8 @@ Full diff: `C:\Users\josel\AppData\Local\Temp\opencode\sdk_patches.diff` (regene
 - `src/system/xmemory.cpp`: `BaseHeap::Alloc failed` now logs the request size and the free and largest free page runs.
 - `src/codegen/builders/system.cpp` + `helpers.h`: `sync` → `atomic_thread_fence(seq_cst)`, `lwsync`/`eieio` → compiler fence, `lwarx`/`ldarx` → atomic acquire load. This is a codegen change, so regenerate.
 - Port side, `src/sh_xctd_cache_fix.cpp`: XCTD cache writer waits for the reader count to reach 0.
+- Port side, `src/sh_overlapped_fix.cpp`: `GetOverlappedResult` ignores a stale signal while the request is still pending (W1 fix).
+- `src/system/xevent.cpp`: `XEvent::Initialize` stores `manual_reset_`.
 
 **6** is replaced by `non_argument_as_local = false` in `config/codegen.toml`. **23** (`gpu_backend`) is replaced by `IsVulkanBackend()` returning true off Windows. Debug/D3D12-only patches (4, 7–11, 13, 15, 16, 21, 24) are not needed for Linux. `CMakeLists.txt` stages `librexruntime`/`librexgpu-xenos`/`libTracyClient` next to the executable on every Linux build; **don't build while the game is running** (replacing its `.so` files corrupts the running process).
 
