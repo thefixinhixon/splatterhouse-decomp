@@ -1,20 +1,20 @@
-// Splatterhouse (2010) - fix defensivo del crash "Call to invalid or
-// unregistered function at 0x00000000" (transicion al capitulo 6).
+// Splatterhouse (2010) - defensive fix for the "Call to invalid or
+// unregistered function at 0x00000000" crash (transition to chapter 6).
 //
-// Cadena resuelta con llvm-symbolizer --relative-address:
+// Chain resolved with llvm-symbolizer --relative-address:
 //   sub_82917918 -> sub_82366CC0
-// En sub_82366CC0:
-//   lwz r11,48(r4) ; mtctr r11 ; bctrl      (llamada virtual por [obj+48])
+// In sub_82366CC0:
+//   lwz r11,48(r4) ; mtctr r11 ; bctrl      (virtual call through [obj+48])
 //
-// El objeto llega CORRECTAMENTE construido (vtable valida 0x82058AE8) pero con
-// [obj+48] == 0. Ese slot lo inicializa a 0 el constructor sub_82347100
-// (recomp.113.cpp) y el valor "esperado" seria 0x822BE680, un metodo virtual
-// base que es no-op (blr). En este camino el callback nunca se asigna, asi que
-// la llamada indirecta acaba saltando a 0x00000000.
+// The object arrives CORRECTLY constructed (valid vtable 0x82058AE8) but with
+// [obj+48] == 0. That slot is zeroed by the constructor sub_82347100
+// (recomp.113.cpp) and the "expected" value would be 0x822BE680, a base virtual
+// method that is a no-op (blr). On this path the callback is never assigned, so
+// the indirect call ends up jumping to 0x00000000.
 //
-// En el original ese flujo no se alcanza con el objeto a medio inicializar (hay
-// un LevelState/LevelManager que todavia no existe). Este override replica el
-// comportamiento defensivo del resto del motor: si el slot es 0, no se llama.
+// In the original this flow isn't reached with a half-initialized object (there
+// is a LevelState/LevelManager that doesn't exist yet). This override replicates
+// the defensive behavior of the rest of the engine: if the slot is 0, skip the call.
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -45,12 +45,12 @@ REX_HOOK_RAW(sub_82366CC0) {
   auto* memory = rex::Runtime::instance()->memory();
   const uint32_t obj = ctx.r4.u32;
   if (!GuestLoadU32Offset(memory, obj, 48)) {
-    // Slot virtual sin inicializar: saltar la llamada en vez de bctrl a 0.
+    // Uninitialized virtual slot: skip the call instead of bctrl to 0.
     static bool logged = false;
     if (!logged) {
       logged = true;
       REXLOG_WARN(
-          "[sh-uf] sub_82366CC0: [obj+48]==0 (obj=0x{:08X}); se omite la llamada virtual", obj);
+          "[sh-uf] sub_82366CC0: [obj+48]==0 (obj=0x{:08X}); skipping the virtual call", obj);
     }
     ctx.r3.u64 = 0;
     return;

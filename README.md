@@ -74,15 +74,16 @@ dlc\                        # optional: drop DLC packages here (created on start
 The game itself is played with a **gamepad** (Xbox/XInput-compatible; the input backend is
 configurable with `input_backend = "sdl"` or `"xinput"`).
 
-The options screen (`F5`) is the port's own, in the game's visual style. **The labels are in Spanish
-at the moment** (`Resolucion interna` = internal resolution, `Aspecto interno` = internal aspect,
-`Pantalla completa` = fullscreen, `Idioma` = language, `Salir del juego` = quit).
+The options screen (`F5`) is the port's own, in the game's visual style.
 
 **Using the F5 screen**
 
 - ↑/↓ (or the mouse wheel) move the selection, ←/→ change the value, **S** saves to
   `splatterhouse.toml`, **Esc** or **F5** closes. Mouse click also works.
-- Rows tagged `[reinicio]` need a restart to apply (video mode).
+- **Interface → Menu language** switches this screen between English and Spanish
+  (`sh_menu_language`); it applies immediately. **Game → Game language** is separate: it sets the
+  game's own text (`sh_language`).
+- Rows tagged `[restart]` need a restart to apply (video mode).
 - Saving rewrites the file; the previous version is kept as `splatterhouse.toml.bak`.
 - **Presets** change only the *vertical* internal resolution (Low 540p / Medium 720p / High 900p /
   Ultra 1080p) and keep your aspect ratio, so they don't break an ultrawide setup.
@@ -94,13 +95,13 @@ the aspect ratio of your window/monitor (`sh_aspect = "auto"`), so the game rend
 natively — no pillarboxing, no stretching. The log shows it:
 
 ```
-[sh-aspect] auto: modo interno 2560x1080 (antes 1920x1080, pantalla 2.37:1)
+[sh-aspect] auto: internal mode 2560x1080 (was 1920x1080, screen 2.37:1)
 ```
 
 You can override it in `F5`:
 
-- **Aspecto interno** → `auto` (default), `16:9`, `21:9`, `32:9`.
-- **Resolucion interna** → up to `3440x1440` (including `2560x1080`); picking one sets `sh_aspect` to
+- **Internal aspect** → `auto` (default), `16:9`, `21:9`, `32:9`.
+- **Internal resolution** → up to `3440x1440` (including `2560x1080`); picking one sets `sh_aspect` to
   `keep` so your choice is respected.
 
 Note that a wider mode costs more pixels in the ROV path (~33 % more from 16:9 1080p to 21:9 1080p);
@@ -122,8 +123,8 @@ real guest frame rate and allows tearing **only on frames that miss the 60 FPS b
   instead of locking to 30. There may be slight tearing while it is below 60: that's the price of not
   dropping to 30.
 
-`F5 → Tearing / VRR` has three states: `auto (solo si baja de 60)` (default), `siempre (VRR)` (always
-tear — ideal with **G-Sync/FreeSync**) and `desactivado (60/30)` (old behaviour, never tear).
+`F5 → Tearing / VRR` has three states: `auto (only below 60)` (default), `always (VRR)` (always
+tear — ideal with **G-Sync/FreeSync**) and `off (60/30)` (old behaviour, never tear).
 
 ---
 
@@ -214,13 +215,13 @@ message:
 [Configuration](#configuration-splatterhousetoml-next-to-the-exe)).
 
 **Combat is slow (especially AMD/Intel GPUs).**
-Lower the internal resolution: **F5 → Preset → Low/Medium**, or `F5 → Resolucion interna`. The ROV
+Lower the internal resolution: **F5 → Preset → Low/Medium**, or `F5 → Internal resolution`. The ROV
 cost scales with pixels; 720p has ~2.2× fewer pixels than 1080p. See `docs/rov-performance.md` §7.
 
 **I see a horizontal tear line.**
 It should normally not happen at 60 FPS (adaptive tearing). If you are below 60 FPS it can appear; set
-`F5 → Tearing / VRR → desactivado (60/30)` to never tear (you'll get the 60/30 behaviour instead), or
-enable G-Sync/FreeSync in your GPU panel and use `siempre (VRR)`.
+`F5 → Tearing / VRR → off (60/30)` to never tear (you'll get the 60/30 behaviour instead), or
+enable G-Sync/FreeSync in your GPU panel and use `always (VRR)`.
 
 **Where are the logs?**
 `splatterhouse.log` next to the exe (`log_level = "warn"` by default; raise it to `info` or `trace` for
@@ -243,6 +244,7 @@ more detail). Archived logs are in `logs\`.
 | `d3d12_present_adaptive_tearing` | `true` | tear only when the frame misses 60 FPS |
 | `d3d12_allow_variable_refresh_rate_and_tearing` | `false` | `true` = always tear ("VRR mode") |
 | `sh_language` | `auto`/`english`/`spanish`/… | **text** language (audio is always English) |
+| `sh_menu_language` | `english`/`spanish` | language of the F5 options screen |
 | `sh_60fps` | `true` | 60 FPS patch |
 | `sh_unlock_levels` / `sh_unlock_levels_max` | `true` / `7` | chapter select unlock |
 | `log_level` | `warn` / `info` / `trace` | log verbosity |

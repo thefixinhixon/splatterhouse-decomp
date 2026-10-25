@@ -1,15 +1,15 @@
 """
-Encuentra direcciones de funcion NO registradas referenciadas desde data
-(vtables / punteros de funcion) usando el dump de la imagen guest.
+Finds UNREGISTERED function addresses referenced from data
+(vtables / function pointers) using the guest image dump.
 
-Requiere el dump creado por la app (cvar dump_guest=1):
+Requires the dump created by the app (cvar dump_guest=1):
   set REXCVAR_dump_guest=1
   out\\build\\win-amd64-release\\splatterhouse.exe
-(o dump_guest = true en splatterhouse.toml)
+(or dump_guest = true in splatterhouse.toml)
 
-Uso:
-  python tools/find_unregistered.py            # informe
-  python tools/find_unregistered.py --apply    # añade las entradas a config/codegen.toml
+Usage:
+  python tools/find_unregistered.py            # report
+  python tools/find_unregistered.py --apply    # adds the entries to config/codegen.toml
 """
 import re
 import struct
@@ -39,21 +39,21 @@ print(f"dump: {DUMP} ({len(data)/1024/1024:.1f} MB, base {img_base:#x})")
 code_lo = code_base - img_base
 data_region = data[:code_lo]
 
-# Referencias desde data: BE32 valores dentro del rango [code_base, code_end)
+# References from data: BE32 values within [code_base, code_end)
 candidates = set()
 counts = {}
 for off in range(0, code_lo - 4, 4):
     (w,) = struct.unpack(">I", data_region[off : off + 4])
     if code_base <= w < code_end:
-        # Filtra: el valor debe ser una direccion 4-align
+        # Filter: the value must be a 4-aligned address
         if w & 3:
             continue
         candidates.add(w)
         counts[w] = counts.get(w, 0) + 1
 
 missing = sorted(a for a in candidates if a not in registered)
-print(f"referencias en data que apuntan a codigo: {len(candidates)}")
-print(f"no registradas: {len(missing)}")
+print(f"references in data pointing to code: {len(candidates)}")
+print(f"unregistered: {len(missing)}")
 
 def prologue(addr):
     off = addr - img_base
@@ -61,7 +61,7 @@ def prologue(addr):
         return "?"
     w, = struct.unpack(">I", data[off : off + 4])
     opcode = w >> 26
-    if (w & 0xFFFF0000) == 0x94210000: return "stwu r1"   # prologo stack frame
+    if (w & 0xFFFF0000) == 0x94210000: return "stwu r1"   # stack frame prologue
     if opcode == 15: return "addis"
     if opcode == 18: return "b/bl"
     if w == 0x4E800020: return "blr"
@@ -71,14 +71,14 @@ def prologue(addr):
 for a in missing[:60]:
     print(f"  {a:#010x}  (x{counts.get(a,1)})  insn={prologue(a)}")
 if len(missing) > 60:
-    print(f"  ... y {len(missing)-60} mas")
+    print(f"  ... and {len(missing)-60} more")
 
 if "--apply" in sys.argv:
     if not missing:
-        print("nada que añadir")
+        print("nothing to add")
         sys.exit(0)
     toml = CODEGEN_TOML.read_text(encoding="utf-8")
     toml = re.sub(r"(?<=\[functions\])\n", "\n" +
         "\n".join(f"0x{a:X} = {{ }}" for a in missing) + "\n", toml, 1)
     CODEGEN_TOML.write_text(toml, encoding="utf-8")
-    print(f"aplicado: {len(missing)} entradas añadidas a config/codegen.toml")
+    print(f"applied: {len(missing)} entries added to config/codegen.toml")

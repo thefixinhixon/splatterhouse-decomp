@@ -1,12 +1,122 @@
 # AGENTS.md — Splatterhouse Recompiled (X360 → PC)
 
-Port nativo de **Splatterhouse (2010) X360** por **recompilación estática** con [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). En recompilación estática la "pila invitada" **ES** la pila nativa del host: `ctx->lr` no sirve (devuelve 0); el llamador invitado real aparece como frame `splatterhouse!__imp__sub_*` (resoluble con `llvm-symbolizer --relative-address`).
+Native port of **Splatterhouse (2010) X360** via **static recompilation** with [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). In static recompilation the "guest stack" **IS** the native host stack: `ctx->lr` is useless (returns 0); the real guest caller shows up as a `splatterhouse!__imp__sub_*` frame (resolvable with `llvm-symbolizer --relative-address`).
 
-## Entorno (Windows)
+## Linux port (active work, read first)
+
+The Windows notes further down describe the original author's setup. This section is the current state of the **Linux/Vulkan** build and is where multiple agents coordinate.
+
+### Status (2026-10-25)
+
+- Builds and boots: intro, title, menus, story mode, cutscenes and first combat render with correct colours on Vulkan (`fsi` path, AMD RADV tested).
+- **Blocker: intermittent freeze while loading a level** (see W1). The game is otherwise playable once loaded.
+- Performance: the user reports slow runs and once "a ton of graphical glitches" (W4, W5). Pinning the game to one core avoids W1 but performance is unacceptable, so that is not a fix.
+- Nothing from this Linux work is committed yet (see "Multi-agent setup" below before starting).
+
+### Build (Linux)
+
+```bash
+cmake --preset linux-amd64-relwithdebinfo
+cmake --build out/build/linux-amd64-relwithdebinfo -j$(nproc)    # ~15 min full, seconds incremental
+```
+
+- Clang 18+ (20 tested). The build stages `librexruntimerd.so`, `librexgpu-xenosrd.so`, `libTracyClientrd.so` next to the executable automatically.
+- No `splatterhouse.toml` needed: Linux always uses Vulkan + `render_target_path_vulkan=fsi` + `vulkan_async_skip_incomplete_frames=false` (`src/splatterhouse_app.h`, `IsVulkanBackend()`).
+- **Codegen changes** (anything under `extern/rexglue-sdk/src/codegen/`) need: `cmake --build out/build/linux-amd64-relwithdebinfo --target rexglue`, then `extern/rexglue-sdk/out/linux-amd64/rexgluerd codegen splatterhouse_manifest.toml --ignore-stamp` (~2.5 min), then the full build (~15 min).
+- `game/` holds the extracted ISO (gitignored). The run directory needs an `assets -> game` symlink.
+
+### Hard rules (the user is using this PC while agents work)
+
+1. **Never test on the user's screens or speakers.** All runs go through `tools/linux/headless_run.sh` (Xvfb + software WSI, `--audio_mute`). Don't take desktop screenshots.
+2. **Never open the user's real controller.** A killed test once left their pad rumbling nonstop. The harness passes `--input_backend=none` on the **command line** (the toml value is not honoured) and checks the log for `OnControllerDeviceAdded`; it warns if a real pad was opened. Input comes from the keyboard-emulated pad (`mnk_mode = true`; Return = Start, Space = A, arrows = right stick, Shift+arrows = D-pad).
+3. **Never build into or kill a game you didn't start.** `out/build/linux-amd64-relwithdebinfo/` is the user's play directory and its `splatterhouse.toml` holds their saved F5 settings; don't overwrite it. Check `pgrep -a splatterhouse` first: rebuilding replaces the `.so` files under a running game and corrupts it. The harness always runs a **copy** in its own run directory.
+4. Don't commit unless the user says so (see Conventions).
+
+### Headless testing
+
+```bash
+# one run, default script (Start at 30/40 s, A every 10 s from 50 s) for 130 s:
+DISPLAY_NUM=91 tools/linux/headless_run.sh mytag 130
+# crash statistics for W1 (about 95 s in, during the first level load):
+DISPLAY_NUM=91 RUNS=6 GDB=1 tools/linux/headless_run.sh w1 130
+# custom key script: time:key pairs (xdotool key names)
+DISPLAY_NUM=91 tools/linux/headless_run.sh menu 60 30:Return 40:Return 50:space
+```
+
+- Output (`$RUN_DIR/out/`): `<tag>_<n>.log` (full game log, rotation disabled), `<tag>_<n>.stdout.txt` (gdb output when `GDB=1`), and a 640x360 PNG at each key press plus `_end.png`. Look at the PNGs with an image viewer or the Read tool; don't screenshot the desktop.
+- `GDB=1`: breaks on the first `Unhandled guest access violation`, prints the faulting backtrace plus all threads, then kills the game. Frames show up as `__imp__sub_XXXXXXXX` with `generated/` file:line.
+- `EXTRA="--flag=value"` passes cvars (e.g. `--ignore_thread_affinities=false`, which raises W1 to ~80% and is the best reproduction). `PIN=2` runs on one core.
+- Timeline with the default script: title ~25 s; Start at 30 s; auto-save notice, then Story mode, then mask selection (A presses); loading screen ~70 s; cutscene; gameplay ~100 s.
+- Use a **different `DISPLAY_NUM` per agent** (91, 92, …), which also gives a separate run directory. Each run is heavy (software presentation copies every frame); don't run more than two at once on this machine.
+- Gotchas:
+  - ImageMagick `fx:mean.g` returns 0 on greyscale PNGs; use `identify -verbose`.
+  - With log rotation on (the game's default) a crash flood pushes the start of the problem out of the log. The harness sets `--log_max_file_size_mb=2000`.
+  - Each run maps a 4.8 GB `/dev/shm` file. It's unlinked at creation now (`memory_posix.cpp`), so killed runs don't leak; if `/dev/shm` ever fills up again, the game SIGBUSes on level load.
+
+### Work board
+
+Claim a task by putting your agent name and date in **Owner** before starting, and keep **Notes** current. One owner per task. Tasks marked *codegen* regenerate `generated/`; only one agent may do that at a time (see Multi-agent setup).
+
+| ID | Task | Owner | Notes |
+|---|---|---|---|
+| W1 | **Level-load stale-block race** (blocker) | | See W1 below. Exit: checkpoint C1. |
+| W2 | Interim mitigation for W1 without the single-core cost | | Idea: find the guest threads in the NIF streaming path (I/O thread runs `sub_8290DB88`, reader runs `sub_82991488`/`sub_82991388`) and pin only those to one host core via `XThread::SetActiveCpu`/`set_affinity_mask`, leaving render/GPU threads free. Must not regress fps. Exit: C1 with fps within 10% of unpinned. |
+| W3 | Rumble watchdog check on a real pad | user | `sh_rumble_timeout_ms` (SDL driver). Needs the user's controller; agents can't test it (rule 2). Expect `[sh-rumble]` in the log if a rumble gets stuck. |
+| W4 | Linux performance measurement | | No fps counter on Vulkan yet (`sh_log_fps` is D3D12-only). Add a vblank/VdSwap rate log to the Vulkan path, measure headless at 720p/1080p, then profile (perf) a gameplay scene. |
+| W5 | "Ton of graphical glitches" (1 user run) | | Unreproduced. Capture PNGs every few seconds through a full load+gameplay run and compare against Xenia; check `vulkan_async_skip_incomplete_frames` and pipeline-compile pop-in first. |
+| W6 | Remaining missing private SDK patches | | See the Linux checkout note under "Local SDK patches": 11 (`[sh-uf]` continue mode) would speed up crash hunting; 24/16 are D3D12-only. |
+| W7 | Commit/branch plan | user | Prerequisite for multi-agent work; see below. |
+| W8 | Port the level warp (`sh_warp`) | | The cvar exists (`src/main.cpp`, F5 row) but nothing reads it on this SDK: the original implementation was in the missing private `VdSwap_entry` patch (see "Dev tool: level warp"). Re-implement it port-side (e.g. a hook on a per-frame guest function calling `GameState::RequestLoadLevelByLevelName` `0x82795E48` with `*(0x82FFA3AC)`). Lets the harness hit every level load quickly (C2). |
+
+### W1: level-load stale-block race (what is known)
+
+- **Symptom:** about 95 s into the default script (first level load) the game freezes with thousands of `Unhandled guest access violation: write of guest 0x00000000`. Sometimes it's preceded by `BaseHeap::Alloc failed to find contiguous range: ... request 20010000 bytes`; sometimes the variant is a null read (`0x4`/`0x8`). Rate: about 50% of runs, about 80% with `--ignore_thread_affinities=false`, 0/4 with `PIN=2`.
+- **Chain:** `.nif` loader `sub_8233B6A8` → `sub_8233E2A8` → `sub_822B3E98` → per-block loaders (e.g. `sub_8233D480`, a "count + 4-byte entries" deserializer) → the vector grows to 128M entries (`sub_8247FF20` asks for 512 MB) → alloc fails → null write in a loop.
+- **Root cause (measured):** the bytes handed to the NIF parser are wrong. A capture of a bad run against a single-core reference of the same file (`g_lvl1_act1_sec_a_lobby.nif`) shows **exactly one 64 KB block replaced by the previous 64 KB block** (`bad[0x4E2000:+64K] == ref[0x4D2000:+64K]`), with correct data again afterwards. The parser then desyncs.
+- **Pipeline:**
+  - The engine's streaming reader (`NiFile`-like object; read `sub_82991488`, refill `sub_82991388`) pops output descriptors from an "LfQu" lock-free queue (magic `0x4C665175`; push `sub_822A4178`, pop `sub_822A4580`) and releases them back.
+  - An I/O thread (`sub_8290DB88` → `sub_8290D9B8`) pops free descriptors, runs zlib `inflate(strm, Z_SYNC_FLUSH)` (`sub_8274C760`; `z_stream` with next_in +0, avail_in +4, next_out +12, avail_out +16, current input chunk descriptor at +56) into `[desc+8]`, sets `[desc+0]` = bytes produced and pushes the descriptor to the filled queue.
+  - Descriptor layout: +0 size, +4 consumed offset, +8 buffer. **For large reads the reader points +8 at its own destination** (zero-copy), so buffers are not fixed.
+  - The compressed input chunks come from the file layer: XAPI XCTD (`sub_829F5E70` → `sub_829F2370`, request ring `sub_829F4490`/`sub_829F4578`, cache `sub_829F4B58`/`sub_829F4C80`) over `NtReadFile`.
+- **Ruled out** (don't redo):
+  - The LfQu queues: no descriptor is ever double-pushed or popped from the wrong queue in crashing runs. All list ops use 64-bit counted pointers (`ldarx`/`stdcx.`), so value-CAS emulation is ABA-safe there.
+  - Two threads inflating one `z_stream` at once (never seen in crashing runs).
+  - `RtlEnter/LeaveCriticalSection`, APC delivery (`ExecuteTrap` saves/restores context), `NtReadFile`/`NtReadFileScatter`, completion ports (unused by the game), zeroing on commit. All match Xenia.
+  - Missing memory barriers: codegen now emits `atomic_thread_fence` for `sync`, compiler fences for `lwsync`/`eieio`, and an acquire load for `lwarx`/`ldarx`. Guest loads/stores were already `volatile`.
+  - The XCTD cache reader-count race: it's real, and `src/sh_xctd_cache_fix.cpp` fixes it, but it is not this bug.
+  - User settings and the 1 kHz vblank (`vsync=false`).
+- **Heisenbug warning:** heavy instrumentation (hashing whole buffers, locks around inflate) makes it disappear. Keep probes to a few loads and stores per event.
+- **Open leads:**
+  - (a) Trace one descriptor through release → I/O pop → inflate → push → reader pop with **cheap** per-event records (sequence number, thread, `[desc+0/+4/+8]`, `z_stream` next_out/avail_out before and after inflate) into a lock-free ring, dumped only when `sub_8247FF20` sees a huge reserve.
+  - (b) Check whether the reader can release a descriptor (or re-point `+8`) while the I/O thread is still inflating into it (zero-copy path).
+  - (c) Check whether the compressed input descriptor at `z_stream+56` can be released or refilled while still being consumed.
+  - (d) Compare with the game under Xenia Canary (the user has it), which doesn't show the bug: timing, or Xenia's `stwcx` reservation semantics.
+- **Tools:** `src/sh_stream_diag.cpp` (not built; add it to `SPLATTERHOUSE_SOURCES` to use) hooks the parser and dumps the bytes it received. Run with `SH_NIF_DUMP_DIR=<dir>` for bad runs and `SH_NIF_REF=<file.nif> PIN=2` for a single-core reference, then diff the `.bin` files (`.mask` marks captured bytes). It also contains the queue-integrity and descriptor probes used above; strip them before reuse.
+
+### Checkpoints
+
+Run each checkpoint headless with the harness and record the result (date, commit or diff hash, numbers) in the work board Notes.
+
+- **C0: Boot.** `RUNS=1` reaches the Story mode menu (`_50`/`_60` PNGs), no `guest-AV`, no `real-pads-opened`. Passing today.
+- **C1: Level load is stable.** `RUNS=10 GDB=1` with the default script **and** `RUNS=10 GDB=1 EXTRA=--ignore_thread_affinities=false`: 0 crashes, and the `_end.png` shows gameplay. (Today: ~5/10 and ~8/10.)
+- **C2: Soak.** One 15-minute run with a key script that keeps playing (attack/move presses), no crash. Then load every level (needs W8).
+- **C3: Performance.** fps measured (W4) at 1080p in the first combat arena, recorded here, with no regression against the previous checkpoint.
+- **C4: User sign-off.** The user plays a session with their controller (also covers W3).
+
+### Multi-agent setup
+
+- **Prerequisite (W7): commit the current work first.** Most Linux fixes live as *uncommitted* changes inside the `extern/rexglue-sdk` submodule and the main repo. A new git worktree or clone won't have them. The user has to approve committing: an SDK branch (e.g. `linux-port`) committed in the submodule, then the main repo committed with the new submodule SHA.
+- **One worktree and one build directory per agent** (`git worktree add ../sh-<agent> <branch>`, then `git submodule update --init`). Each worktree needs its own `generated/` (codegen ~2.5 min) and full build (~15 min). Don't share `generated/` or a build directory between agents: codegen rewrites all 208 files and ninja relinks under other agents.
+- `game/` (assets) is shared read-only: symlink it into each worktree (`ln -s /mnt/sdb1/Games/splatterhouse-decomp/game game`).
+- Pick a unique `DISPLAY_NUM` (and so a unique `RUN_DIR`) per agent. Run at most two headless games at once in total.
+- **Codegen changes are serialized:** announce them on the work board before touching `extern/rexglue-sdk/src/codegen/` or `config/codegen.toml`, because they change every generated file and conflict with everyone's builds.
+- **Hand-off:** when stopping, update the work board row and add any new facts to the W1 notes (or a new section). Keep `Ruled out` lists current so others don't repeat experiments.
+
+## Environment (Windows)
 
 - VS 2026 "VS 18" Community + Ninja + LLVM 22.1.8 (`C:\Program Files\LLVM\bin`). Python 3.9.
-- SDK submódulo: `extern/rexglue-sdk` (nightly `0c7b01a`).
-- PATH necesario:
+- SDK submodule: `extern/rexglue-sdk` (nightly `0c7b01a`).
+- Required PATH:
   - `C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`
   - `...\CMake\Ninja` (`ninja.exe`)
 
@@ -14,279 +124,289 @@ Port nativo de **Splatterhouse (2010) X360** por **recompilación estática** co
 
 ```powershell
 cmake --preset win-amd64-debug
-cmake --build out\build\win-amd64-debug -j 4            # todo (exe + DLL)
-# targets concretos:
-#   rexruntime  -> rexruntimed.dll (runtime; salida fija del SDK)
-#   rexglue     -> rexglued.exe   (CLI de codegen; re-embebe las plantillas inja)
-#   splatterhouse -> el .exe
+cmake --build out\build\win-amd64-debug -j 4            # everything (exe + DLL)
+# specific targets:
+#   rexruntime  -> rexruntimed.dll (runtime; fixed SDK output)
+#   rexglue     -> rexglued.exe   (codegen CLI; re-embeds the inja templates)
+#   splatterhouse -> the .exe
 ```
 
-- La DLL **siempre** se emite a `extern\rexglue-sdk\out\win-amd64\rexruntimed.dll` (config de salida fija del CMake del SDK), incluso en Debug.
-- El exe carga la DLL desde **su propio directorio** → copiarla tras cada rebuild de `rexruntime`:
+- The DLL is **always** emitted to `extern\rexglue-sdk\out\win-amd64\rexruntimed.dll` (fixed output config in the SDK's CMake), even in Debug.
+- The exe loads the DLL from **its own directory** → copy it after every `rexruntime` rebuild:
 
 ```powershell
 Copy-Item extern\rexglue-sdk\out\win-amd64\rexruntimed.dll out\build\win-amd64-debug\rexruntimed.dll -Force
 Copy-Item extern\rexglue-sdk\out\win-amd64\rexruntimed.pdb out\build\win-amd64-debug\rexruntimed.pdb -Force
 ```
 
-- El build del exe **auto-ejecuta el codegen** (`rexglued.exe codegen splatterhouse_manifest.toml`) cuando el stamp está caducado. Regeneración completa (208 ficheros): ~800 s. Regenerar a mano:
+- The exe build **auto-runs codegen** (`rexglued.exe codegen splatterhouse_manifest.toml`) when the stamp is stale. Full regeneration (208 files): ~800 s. To regenerate by hand:
   ```powershell
   extern\rexglue-sdk\out\win-amd64\rexglued.exe codegen splatterhouse_manifest.toml --ignore-stamp
   ```
-- `generated/` está **gitignored**: los ficheros generados se pierden si no se regeneran. Cualquier parche manual en `generated/*.cpp` se pierde al regenerar. **Aviso:** editar a mano un fichero de `generated/` actualiza su mtime y hace que ninja **relance el codegen (~800 s)**; si solo era cosmético, sáltalo con `(Get-Item generated\codegen.build.stamp).LastWriteTime = Get-Date`. Por eso los parches van en `src/` (override weak), no en `generated/`.
+- `generated/` is **gitignored**: generated files are lost if not regenerated. Any manual patch in `generated/*.cpp` is lost on regeneration. **Warning:** hand-editing a file in `generated/` updates its mtime and makes ninja **re-run codegen (~800 s)**; if it was only cosmetic, skip it with `(Get-Item generated\codegen.build.stamp).LastWriteTime = Get-Date`. That's why patches go in `src/` (weak override), not in `generated/`.
 
-> **Rendimiento (importante):** `win-amd64-debug` compila los 208 ficheros recompilados **sin optimizar** → el *command processor* (decodificación PM4) y el código guest se convierten en cuello de botella (pocos FPS + stutter). Para **jugar/medir** usar el preset **`win-amd64-relwithdebinfo`**:
+> **Performance (important):** `win-amd64-debug` compiles the 208 recompiled files **unoptimized** → the *command processor* (PM4 decoding) and guest code become a bottleneck (low FPS + stutter). To **play/measure** use the **`win-amd64-relwithdebinfo`** preset:
 > ```powershell
-> cmake --preset win-amd64-relwithdebinfo   # (desde un entorno VS: rc.exe en PATH)
+> cmake --preset win-amd64-relwithdebinfo   # (from a VS environment: rc.exe on PATH)
 > cmake --build out\build\win-amd64-relwithdebinfo --target splatterhouse -j 6
 > ```
-> Salida en `out\build\win-amd64-relwithdebinfo\` (DLLs `*rd.dll`); crear ahí la junction `assets`→`game` y copiar `splatterhouse.toml`. El exe Debug y el Release comparten `generated/`.
+> Output in `out\build\win-amd64-relwithdebinfo\` (DLLs `*rd.dll`); create the `assets`→`game` junction there and copy `splatterhouse.toml`. The Debug and Release exes share `generated/`.
 
-> **FSR (FidelityFX) — hay que activarlo en el configure:** el presenter D3D12 trae EASU/RCAS/CAS + temporal FSR2/3, pero viene **compilado fuera** (`REXGLUE_ENABLE_FIDELITYFX=OFF`). Para tenerlo:
+> **FSR (FidelityFX) — must be enabled at configure time:** the D3D12 presenter ships EASU/RCAS/CAS + temporal FSR2/3, but it is **compiled out** (`REXGLUE_ENABLE_FIDELITYFX=OFF`). To get it:
 > ```powershell
 > cmake --preset win-amd64-relwithdebinfo -DREXGLUE_ENABLE_FIDELITYFX=ON
 > ```
-> En Win32 **no** requiere Vulkan SDK; hace FetchContent del fork `rexglue/FidelityFX-SDK` y auto-compila shaders (DXC). Reconstruye `rexruntimerd.dll` y produce **`amd_fidelityfx_dx12drel.dll`** (en `bin/`) que debe copiarse **junto al exe**. Con FFX ON, `present_effect` acepta `bilinear` (defecto), `cas`, `fsr`, `fsr2`, `fsr3`. El preset **Debug** sigue con FFX **OFF** (si lo quieres ahí, pásale el mismo `-D`).
-> **Ojo:** con FFX ON, `rexruntimerd.dll` depende de `amd_fidelityfx_dx12drel.dll`; hay que copiarla **también** en `extern\rexglue-sdk\out\win-amd64\` (junto a la runtime y a `rexgluerd.exe`, el codegen), o el **codegen falla con `0xC0000135` (DLL no encontrada)**.
+> On Win32 it does **not** require the Vulkan SDK; it does a FetchContent of the `rexglue/FidelityFX-SDK` fork and auto-compiles shaders (DXC). It rebuilds `rexruntimerd.dll` and produces **`amd_fidelityfx_dx12drel.dll`** (in `bin/`), which must be copied **next to the exe**. With FFX ON, `present_effect` accepts `bilinear` (default), `cas`, `fsr`, `fsr2`, `fsr3`. The **Debug** preset keeps FFX **OFF** (if you want it there, pass the same `-D`).
+> **Watch out:** with FFX ON, `rexruntimerd.dll` depends on `amd_fidelityfx_dx12drel.dll`; it must **also** be copied to `extern\rexglue-sdk\out\win-amd64\` (next to the runtime and `rexgluerd.exe`, the codegen), or **codegen fails with `0xC0000135` (DLL not found)**.
 
-## Instalación para el usuario final
+## End-user installation
 
-`install.bat` (en la raíz) + **`tools\extract-xiso.exe`**: el usuario **arrastra la ISO** de Splatterhouse sobre `install.bat`. **No se puede montar** una ISO de Xbox 360 (es un disco de video, no UDF/ISO9660 estandar), por eso se extrae con **`extract-xiso -x -s`** (`tools\extract-xiso.exe`, [xboxdev/extract-xiso](https://github.com/xboxdev/extract-xiso)); `-s` salta `$SystemUpdate`. Luego mueve el contenido a **`assets\`** junto al exe y **desencripta** el XEX con **`tools\xextool.exe -e u -c b -o assets\default.dec.xex assets\default.xex`** (XexTool v6.3 de xorloser). `SplatterhouseApp::OnLoadXexImage` usa `game:\default.dec.xex` si existe en `assets\` (si no, el `default.xex` retail). **Sin `splatterhouse.toml` no se carga la GPU** (`gpu_plugin` vacío → pantalla negra); el instalador **crea un `splatterhouse.toml` por defecto** (`gpu_plugin="xenos"`, `render_target_path_d3d12="rov"`, `present_effect="fsr"`, `vsync=false`, `d3d12_present_frame_limiter[_fps]=60`) si no existe, y `SplatterhouseApp::OnPreSetup` también fuerza `gpu_plugin="xenos"`+ROV+FSR como red de seguridad. La **resolución interna** por defecto depende de la GPU (AMD/Intel → 1280x720, resto → 1920x1080; ver issue #3): en la ruta ROV el coste escala con los píxeles y en AMD/Intel es mucho más caro. El instalador verifica tras extraer que existan `default.xex` + `data\`. Solo hay que ejecutar `splatterhouse.exe`.
-- **Caché de shaders precompilada** (evita los tirones de la primera partida): el SDK guarda las descripciones de pipeline y los shaders traducidos en `%MyDocuments%\splatterhouse\cache\shaders\shareable\{4E4D07F0.rov.d3d12.xpso, 4E4D07F0.xsh}` y los carga al arrancar (el SDK los marca como *"mostly shareable across devices"*). Para distribuirla: jugar una vez para generarla, **`tools\pack_shadercache.bat`** copia la caché a **`shadercache\`** en el release; `install.bat` los copia a la carpeta del usuario. Si una GPU/driver diera problemas, borrar la caché la regenera.
-- **Compilación de shaders/PSO**: el SDK **ya** hace la traducción Xenon→DXBC y la creación de PSO en **hilos de fondo**, **salta el draw** si la pipeline no está lista (`async_shader_compilation=true`) y **precrea en paralelo** todas las pipelines de la caché al arrancar (log `Created N graphics pipelines ... in M ms`). Medido (RTX 5060 Ti): 401 PSOs en ~530 ms; **~2–11 ms por PSO** → el coste es "cientos seguidos", así que la palanca es la **caché completa**, no más async. Diagnóstico: cvar **`sh_pso_log`** (log `[sh-pso] created VS… PS… in X ms` + `draw skipped`). Análisis en `docs/rov-performance.md` §3c.
-- **No hay que desencriptar el XEX**: el runtime carga `game:\default.xex` (retail, `XEX2` con flag encrypted) y lo desencripta él mismo (`src/system/xex_module.cpp`, `xe_xex2_retail_key`). Por eso el manifest usa `default.dec.xex` solo en build/codegen.
+`install.bat` (in the root) + **`tools\extract-xiso.exe`**: the user **drags the Splatterhouse ISO** onto `install.bat`. An Xbox 360 ISO **can't be mounted** (it's a video disc, not standard UDF/ISO9660), so it is extracted with **`extract-xiso -x -s`** (`tools\extract-xiso.exe`, [xboxdev/extract-xiso](https://github.com/xboxdev/extract-xiso)); `-s` skips `$SystemUpdate`. It then moves the contents to **`assets\`** next to the exe and **decrypts** the XEX with **`tools\xextool.exe -e u -c b -o assets\default.dec.xex assets\default.xex`** (xorloser's XexTool v6.3). `SplatterhouseApp::OnLoadXexImage` uses `game:\default.dec.xex` if it exists in `assets\` (otherwise the retail `default.xex`). **Without `splatterhouse.toml` the GPU isn't loaded** (empty `gpu_plugin` → black screen); the installer **creates a default `splatterhouse.toml`** (`gpu_plugin="xenos"`, `render_target_path_d3d12="rov"`, `present_effect="fsr"`, `vsync=false`, `d3d12_present_frame_limiter[_fps]=60`) if it doesn't exist, and `SplatterhouseApp::OnPreSetup` also forces `gpu_plugin="xenos"`+ROV+FSR as a safety net. The default **internal resolution** depends on the GPU (AMD/Intel → 1280x720, others → 1920x1080; see issue #3): on the ROV path the cost scales with pixels and on AMD/Intel it is much more expensive. After extracting, the installer verifies that `default.xex` + `data\` exist. Then the user just runs `splatterhouse.exe`.
+- **Precompiled shader cache** (avoids first-playthrough stutter): the SDK stores pipeline descriptions and translated shaders in `%MyDocuments%\splatterhouse\cache\shaders\shareable\{4E4D07F0.rov.d3d12.xpso, 4E4D07F0.xsh}` and loads them on startup (the SDK marks them as *"mostly shareable across devices"*). To ship it: play once to generate it, **`tools\pack_shadercache.bat`** copies the cache to **`shadercache\`** in the release; `install.bat` copies them to the user's folder. If a GPU/driver has problems, deleting the cache regenerates it.
+- **Shader/PSO compilation**: the SDK **already** does Xenon→DXBC translation and PSO creation on **background threads**, **skips the draw** if the pipeline isn't ready (`async_shader_compilation=true`) and **pre-creates in parallel** all the cached pipelines on startup (log `Created N graphics pipelines ... in M ms`). Measured (RTX 5060 Ti): 401 PSOs in ~530 ms; **~2–11 ms per PSO** → the cost is "hundreds in a row", so the lever is a **complete cache**, not more async. Diagnostics: cvar **`sh_pso_log`** (log `[sh-pso] created VS… PS… in X ms` + `draw skipped`). Analysis in `docs/rov-performance.md` §3c.
+- **Decrypting the XEX isn't required**: the runtime loads `game:\default.xex` (retail, `XEX2` with the encrypted flag) and decrypts it itself (`src/system/xex_module.cpp`, `xe_xex2_retail_key`). That's why the manifest uses `default.dec.xex` only for build/codegen.
 
-## Ejecución
+## Running
 
 ```powershell
-# cwd OBLIGATORIO: out\build\win-amd64-debug
+# cwd REQUIRED: out\build\win-amd64-debug
 out\build\win-amd64-debug\splatterhouse.exe     # log -> splatterhouse.log
 ```
 
-- cvars en `splatterhouse.toml`: `gpu_plugin="xenos"` obligatorio, `log_level=trace`.
-- Junction `assets` → `game`. El XEX (`game/default.dec.xex`) está **LZX-comprimido**.
-- Variables de instrumentación (ver sección): `REX_DEBUG_CS`, `REX_DEBUG_CS_LEVEL`, `REX_TRACE_LO`, `REX_TRACE_HI`.
+- cvars in `splatterhouse.toml`: `gpu_plugin="xenos"` required, `log_level=trace`.
+- Junction `assets` → `game`. The XEX (`game/default.dec.xex`) is **LZX-compressed**.
+- Instrumentation variables (see section): `REX_DEBUG_CS`, `REX_DEBUG_CS_LEVEL`, `REX_TRACE_LO`, `REX_TRACE_HI`.
 
-## Parches locales del SDK (preservar / reportar upstream)
+## Local SDK patches (preserve / report upstream)
 
-Diff completo: `C:\Users\josel\AppData\Local\Temp\opencode\sdk_patches.diff` (regenerar con `git -C extern/rexglue-sdk diff > ...`).
+Full diff: `C:\Users\josel\AppData\Local\Temp\opencode\sdk_patches.diff` (regenerate with `git -C extern/rexglue-sdk diff > ...`).
 
-Originales (2):
-1. `include/rex/platform/exceptions.h` — ajuste SEH.
-2. `resources/templates/codegen/pch_h.inja` — **plantilla embebida**: tras editarla, **reconstruir el target `rexglue`** (re-embebe) y regenerar.
+> **Linux checkout (2026-10-25):** the submodule in this repo is clean upstream `0c7b01a`; the patches below lived in the original author's private SDK copy and are **not** in it. Re-applied here so far (`git -C extern/rexglue-sdk diff`): **5** (`dataPointerScan`, only fills gaps outside known functions), **12** (`vmaxuw`), **14** (Xctd log one-shot DEBUG), **17** (`SaveConfig` merge + `.bak`; command-line/env overrides are not persisted; `Source::kConfig` no longer marks pending restart), **22** (SDL rumble watchdog, `sh_rumble_timeout_ms`), **18** (60 Hz guest vblank with `vsync=false`, cvar `sh_no_vsync_vblank_fast`), plus the Vulkan `exp_adjust` fix (see the Vulkan note in item 23). Added on Linux:
+- `src/core/memory_posix.cpp`: `shm_unlink` right after `shm_open`, so killed runs don't leak 4.8 GB files in `/dev/shm`. Leaked files filled `/dev/shm` and caused SIGBUS on level load.
+- `src/system/xmemory.cpp`: `BaseHeap::Alloc failed` now logs the request size and the free and largest free page runs.
+- `src/codegen/builders/system.cpp` + `helpers.h`: `sync` → `atomic_thread_fence(seq_cst)`, `lwsync`/`eieio` → compiler fence, `lwarx`/`ldarx` → atomic acquire load. This is a codegen change, so regenerate.
+- Port side, `src/sh_xctd_cache_fix.cpp`: XCTD cache writer waits for the reader count to reach 0.
 
-> **Eliminado (era el bug del blocker Scaleform):** el antiguo parche 3 en `src/kernel/xboxkrnl/xboxkrnl_io_info.cpp` hacía que `NtQueryInformationFile(XFileXctdCompressionInformation)` devolviera **éxito con estructura a 0** ("no comprimido"). El engine decide si descomprime XCTD según esa consulta (`sub_829F5600` devuelve `2` sólo si la query **falla**; con éxito+0 devuelve `0` y salta la descompresión) → los `.gfx`/`.dds` XCompress (`0F F5 12 ED`) llegaban crudos a Scaleform y el parse fallaba. Se ha **revertido a HEAD** (el SDK ya devuelve `X_STATUS_INVALID_PARAMETER`, igual que Xenia/upstream), lo que restaura la detección por magic `0x0FF512ED`. No hay que re-añadirlo.
+**6** is replaced by `non_argument_as_local = false` in `config/codegen.toml`. **23** (`gpu_backend`) is replaced by `IsVulkanBackend()` returning true off Windows. Debug/D3D12-only patches (4, 7–11, 13, 15, 16, 21, 24) are not needed for Linux. `CMakeLists.txt` stages `librexruntime`/`librexgpu-xenos`/`libTracyClient` next to the executable on every Linux build; **don't build while the game is running** (replacing its `.so` files corrupts the running process).
 
-Añadidos en esta sesión:
-4. `src/kernel/xboxkrnl/xboxkrnl_rtl.cpp` — instrumentación CS `[sh-diag-instr]` (ring buffer, umbral, frames con módulo+RVA) + suavizado de `assert_true` en Debug (no abortar con el diálogo de MSVC). **IMPORTANTE:** el antiguo `[sh-fix]` (bucle de reintento con "REPAIR" que robaba el lock cuando veía `owner==0`) se ha **eliminado**: era la causa de los miles de `RtlLeaveCriticalSection MISMATCH` y de corrupción de memoria (AVs intermitentes). Ahora se usa el **wait bloqueante de Xenia/upstream**. El ABBA original que lo motivó ya estaba resuelto por el fix de codegen r12 (`__finally`).
-5. `src/codegen/phase_discover.cpp` — **`dataPointerScan`**: registra funciones apuntadas por dwords en secciones de datos que caen en región de código y **no** dentro de una función ya conocida. Complementa al `VTableScanner` (solo RTTI MSVC; UE3 no lo usa).
-6. `src/codegen/builders/context.cpp` + `src/codegen/function_graph.cpp` — **fix de propagación de registros no-ABI** (`r0/r2/r11/r12`): cargas de entrada desde `ctx` y volcado a `ctx` antes de cada llamada. Arregla el bug del `__finally` (r12 = establisher frame) y `__chkstk`.
-7. `src/core/seh_win.cpp` — `[sh-av]`: loguea `RIP`+módulo+RVA+dir de fallo en cada access violation.
-8. `src/kernel/xboxkrnl/xboxkrnl_io.cpp` — `[sh-io]`: backtrace del llamador de cada open `.gfx`/`.dds` + volcado one-shot de la imagen guest a `guest_image.bin`. **Ahora opt-in** (`REX_SH_IO=1`, antes siempre): 22 líneas por asset a la consola sin buffer stallan el streaming (parones con CPU ~0 %).
-9. `include/.../pch_h.inja` — `[sh-trace]`: traza (one-shot por función) de entradas en `[REX_TRACE_LO, REX_TRACE_HI]`.
-10. `src/system/xthread.cpp` — logging de `guest_object` en `XThread::Execute`.
-11. `src/system/function_dispatcher.cpp` — `[sh-uf]`: backtrace del llamador de cada `Call to invalid or unregistered function` (para encontrar la tabla que calcula el destino); con `REX_SH_UF_CONTINUE=1` loguea y continúa en vez de abortar (modo enumeración).
-12. `src/codegen/builders/vector.cpp` + `builders.h` + `src/codegen/instruction_dispatch.cpp` — implementa **`vmaxuw`** (`build_vmaxuw` → `simde_mm_max_epu32`, estaba como `REX_UNIMPLEMENTED`). Es una instrucción de codegen, así que tras tocarla hay que **reconstruir el target `rexglue`** (rexglued.exe) y regenerar (el codegen ya no avisa de `vmaxuw`).
-13. `src/graphics/pipeline/shader/translator.cpp` — `[sh-gpu]`: suaviza los asserts de `GatherVertexFetchInformation` (`assert_not_zero(stride)` y el de stride inconsistente) a un `warn`; hay `vfetch` con stride 0 legítimos y en Release el assert estaba fuera. Se compila en **`rexgpu-xenosd.dll`** (plugin GPU), no en `rexruntimed.dll`. Los `warn` ahora son **opt-in** (`REX_SH_GPU=1`) para no inundar la consola en gameplay.
-14. `src/kernel/xboxkrnl/xboxkrnl_io_info.cpp` — `XFileXctdCompressionInformation` sigue devolviendo `X_STATUS_INVALID_PARAMETER` (necesario para que el engine descomprima XCTD), pero el log pasa de `ERROR` (inundaba) a `DEBUG` one-shot.
-15. `src/graphics/d3d12/pipeline_cache.cpp` — cvar **`sh_pso_async`** (default on): `PipelineCache::EndSubmission()` ya no crea las pipelines en el hilo del present ni espera a los hilos de fondo (era el stall de hasta 673 ms); solo los despierta. Con off, comportamiento original.
-16. `src/graphics/d3d12/command_processor.cpp` + `src/ui/d3d12/d3d12_presenter.cpp` — instrumentación **`[sh-frame]`** (cvars `sh_frame_log`/`sh_frame_log_ms`): scopes de tiempo en las fases del present/submission (ver diagnóstico en la sección de rendimiento). Opt-in.
-17. `src/core/cvar.cpp` — **`SaveConfig` con merge**: antes serializaba solo los flags != default y **reescribía el fichero entero**, borrando claves no registradas en ese momento (p.ej. cvars del plugin GPU o escritas a mano) → el menú F5 "no guardaba" (perdía opciones anteriores). Ahora parsea el toml existente, actualiza/inserta los flags actuales y **preserva el resto**. Además (2026-10): **copia el fichero anterior a `<config>.bak`** antes de reescribir (toml++ no conserva comentarios), y **`Source::kConfig` ya no marca "pendiente de reinicio"** (los valores del toml se aplican antes de inicializar; antes el pie del F5 decía "Reiniciar para aplicar: video_mode_*" nada más arrancar).
-18. `src/graphics/graphics_system.cpp` — **vblank del guest a 60 Hz siempre** (antes con `vsync=false` iba a ~1 kHz y el juego corría acelerado). Cvar `sh_no_vsync_vblank_fast` restaura el modo antiguo.
-19. `src/system/xam/content_manager.cpp` + `include/.../content_manager.h` — **`InstallContentFromDirectory`**: escanea una carpeta buscando paquetes STFS (`CON `/`LIVE`/`PIRS`) y los instala con el `InstallContent` ya existente (extracción + `.header` + license mask). Se llama desde el port al arrancar.
-20. `src/splatterhouse_app.h` — **`InstallDlcPackages()`** (en `OnPostLoadXexImage`): instala los DLC que el usuario deja en `Documents\splatterhouse\<title>\00000002`, `…\0000000000000000\<title>\00000002` o cualquier `<xuid>\<title>\00000002`.
-21. `src/kernel/xam/xam_content.cpp` — **`[sh-dlc]`** opt-in (`REX_SH_DLC=1`): loguea qué contenido enumera/abre el juego (`XamContentCreateEnumerator`/`XamContentCreate`).
-22. `src/input/sdl/sdl_input_driver.{h,cpp}` + `src/input/xinput/xinput_input_driver.cpp` — **watchdog de vibración** (ver "Resuelto: vibración del mando que no para"). Cvar **`sh_rumble_timeout_ms`** (10 s, 0 = off).
-23. `src/ui/rex_app.cpp` — **selección de backend GPU**: nueva cvar **`gpu_backend`** (`any`/`d3d12`/`vulkan`, default `any`) que se pasa a `LoadGpuPlugin`. Con `REXGLUE_USE_VULKAN=ON` (CMake) se habilita el backend **Vulkan** del SDK (renderer Xenos completo, port de Xenia, ya incluido en el árbol). El port (`src/splatterhouse_app.h`) fija la ruta de render target en **`OnFinalizePaths`** (Vulkan→`fsi`, D3D12→`rov`): es el único hook que corre con el plugin GPU ya cargado (cvars registradas) y antes del init de GPU; en `OnPreSetup` sería un no-op.
-    - **Estado del backend Vulkan (2026-10): funciona y es estable (0 AV/MISMATCH, 60 VdSwap/s) pero renderiza GLOBALMENTE MÁS OSCURO que D3D12+ROV** (captura de la misma escena: el logo Namco sale con la placa blanca en D3D12 y **gris** en Vulkan; afecta a 2D y 3D, en ambos paths `fsi` y host-RT). El swapchain es equivalente (`B8G8R8A8_UNORM`, `SRGB_NONLINEAR`) y no hay cvar de gamma/present → es un problema de gamma/color del **renderer Vulkan** (la imagen resuelta sale más oscura), no de config. Por eso el **default del port es `gpu_backend='d3d12'`** (`render_target_path_d3d12='rov'`). Para probar Vulkan: `gpu_backend='vulkan'` + `render_target_path_vulkan='fsi'` (+ `vulkan_async_skip_incomplete_frames=false` para no saltarse frames enteros mientras compilan pipelines; el equivalente D3D12 es saltar solo draws). `present_effect='fsr'` no aplica a Vulkan (FidelityFX se compila para D3D12). Pendiente de arreglo: gamma de la ruta Vulkan.
-24. `src/graphics/d3d12/command_processor.cpp` — instrumentación **`[sh-render]`** (cvars `sh_render_profile`, `sh_render_profile_interval_s`, `sh_render_profile_top`): perfil de workload de render por intervalo (draws/frame, pares VS:PS por hash de ucode, tipo de primitiva, y "pases" por formato/base/pitch/msaa/profundidad con proxy de píxeles por scissor). Opt-in; se usó para caracterizar el combate (ver `docs/rov-performance.md` §3d): en combate ~1350 draws/frame, dos pases dominantes (escena + profundidad/sombras). Sin `fsi`, el path por defecto de Vulkan (host render targets) deja la escena casi negra, igual que RTV en D3D12.
+Originals (2):
+1. `include/rex/platform/exceptions.h` — SEH tweak.
+2. `resources/templates/codegen/pch_h.inja` — **embedded template**: after editing it, **rebuild the `rexglue` target** (re-embeds) and regenerate.
 
-(`thirdparty/libmspack` es un submódulo dirty preexistente.)
+> **Removed (it was the Scaleform blocker bug):** the old patch 3 in `src/kernel/xboxkrnl/xboxkrnl_io_info.cpp` made `NtQueryInformationFile(XFileXctdCompressionInformation)` return **success with a zeroed struct** ("not compressed"). The engine decides whether to decompress XCTD based on that query (`sub_829F5600` returns `2` only if the query **fails**; with success+0 it returns `0` and skips decompression) → the XCompress `.gfx`/`.dds` files (`0F F5 12 ED`) reached Scaleform raw and parsing failed. It has been **reverted to HEAD** (the SDK already returns `X_STATUS_INVALID_PARAMETER`, same as Xenia/upstream), which restores detection by the `0x0FF512ED` magic. It must not be re-added.
 
-## Estado y diagnóstico
+Added in this session:
+4. `src/kernel/xboxkrnl/xboxkrnl_rtl.cpp` — CS instrumentation `[sh-diag-instr]` (ring buffer, threshold, frames with module+RVA) + softened `assert_true` in Debug (don't abort with the MSVC dialog). **IMPORTANT:** the old `[sh-fix]` (retry loop with "REPAIR" that stole the lock when it saw `owner==0`) has been **removed**: it was the cause of the thousands of `RtlLeaveCriticalSection MISMATCH` and of memory corruption (intermittent AVs). The **blocking wait from Xenia/upstream** is used now. The original ABBA that motivated it was already solved by the r12 codegen fix (`__finally`).
+5. `src/codegen/phase_discover.cpp` — **`dataPointerScan`**: registers functions pointed to by dwords in data sections that fall in a code region and are **not** inside an already-known function. Complements the `VTableScanner` (MSVC RTTI only; UE3 doesn't use it).
+6. `src/codegen/builders/context.cpp` + `src/codegen/function_graph.cpp` — **non-ABI register propagation fix** (`r0/r2/r11/r12`): loads them from `ctx` on entry and spills them to `ctx` before each call. Fixes the `__finally` bug (r12 = establisher frame) and `__chkstk`.
+7. `src/core/seh_win.cpp` — `[sh-av]`: logs `RIP`+module+RVA+fault address on every access violation.
+8. `src/kernel/xboxkrnl/xboxkrnl_io.cpp` — `[sh-io]`: caller backtrace for every `.gfx`/`.dds` open + one-shot dump of the guest image to `guest_image.bin`. **Now opt-in** (`REX_SH_IO=1`, it used to be always on): 22 lines per asset to the unbuffered console stall streaming (hitches with ~0 % CPU).
+9. `include/.../pch_h.inja` — `[sh-trace]`: trace (one-shot per function) of entries in `[REX_TRACE_LO, REX_TRACE_HI]`.
+10. `src/system/xthread.cpp` — logging of `guest_object` in `XThread::Execute`.
+11. `src/system/function_dispatcher.cpp` — `[sh-uf]`: caller backtrace for every `Call to invalid or unregistered function` (to find the table that computes the target); with `REX_SH_UF_CONTINUE=1` it logs and continues instead of aborting (enumeration mode).
+12. `src/codegen/builders/vector.cpp` + `builders.h` + `src/codegen/instruction_dispatch.cpp` — implements **`vmaxuw`** (`build_vmaxuw` → `simde_mm_max_epu32`, it was `REX_UNIMPLEMENTED`). It's a codegen instruction, so after touching it you must **rebuild the `rexglue` target** (rexglued.exe) and regenerate (codegen no longer warns about `vmaxuw`).
+13. `src/graphics/pipeline/shader/translator.cpp` — `[sh-gpu]`: softens the `GatherVertexFetchInformation` asserts (`assert_not_zero(stride)` and the inconsistent-stride one) to a `warn`; there are legitimate `vfetch`es with stride 0 and in Release the assert was compiled out. It is built into **`rexgpu-xenosd.dll`** (GPU plugin), not `rexruntimed.dll`. The `warn`s are now **opt-in** (`REX_SH_GPU=1`) to avoid flooding the console during gameplay.
+14. `src/kernel/xboxkrnl/xboxkrnl_io_info.cpp` — `XFileXctdCompressionInformation` still returns `X_STATUS_INVALID_PARAMETER` (required for the engine to decompress XCTD), but the log goes from `ERROR` (flooding) to a one-shot `DEBUG`.
+15. `src/graphics/d3d12/pipeline_cache.cpp` — cvar **`sh_pso_async`** (default on): `PipelineCache::EndSubmission()` no longer creates pipelines on the present thread or waits for the background threads (that was the stall of up to 673 ms); it only wakes them. With off, original behavior.
+16. `src/graphics/d3d12/command_processor.cpp` + `src/ui/d3d12/d3d12_presenter.cpp` — **`[sh-frame]`** instrumentation (cvars `sh_frame_log`/`sh_frame_log_ms`): timing scopes in the present/submission phases (see the diagnosis in the performance section). Opt-in.
+17. `src/core/cvar.cpp` — **`SaveConfig` with merge**: it used to serialize only flags != default and **rewrite the whole file**, deleting keys not registered at that moment (e.g. GPU plugin cvars or hand-written ones) → the F5 menu "didn't save" (lost previous options). Now it parses the existing toml, updates/inserts the current flags and **preserves the rest**. Also (2026-10): it **copies the previous file to `<config>.bak`** before rewriting (toml++ doesn't keep comments), and **`Source::kConfig` no longer marks "pending restart"** (toml values are applied before initialization; before, the F5 footer said "Restart to apply: video_mode_*" right after startup).
+18. `src/graphics/graphics_system.cpp` — **guest vblank always at 60 Hz** (before, with `vsync=false` it ran at ~1 kHz and the game ran sped up). Cvar `sh_no_vsync_vblank_fast` restores the old mode.
+19. `src/system/xam/content_manager.cpp` + `include/.../content_manager.h` — **`InstallContentFromDirectory`**: scans a folder for STFS packages (`CON `/`LIVE`/`PIRS`) and installs them with the existing `InstallContent` (extraction + `.header` + license mask). No longer required: the port now does the scan itself with the public `InstallContent`/`ContentExists` (`SplatterhouseApp::InstallStfsPackagesFrom`), so it also builds against upstream SDK `0c7b01a`.
+20. `src/splatterhouse_app.h` — **`InstallDlcPackages()`** (in `OnPostLoadXexImage`): installs the DLC the user drops in `Documents\splatterhouse\<title>\00000002`, `…\0000000000000000\<title>\00000002` or any `<xuid>\<title>\00000002`.
+21. `src/kernel/xam/xam_content.cpp` — **`[sh-dlc]`** opt-in (`REX_SH_DLC=1`): logs which content the game enumerates/opens (`XamContentCreateEnumerator`/`XamContentCreate`).
+22. `src/input/sdl/sdl_input_driver.{h,cpp}` + `src/input/xinput/xinput_input_driver.cpp` — **rumble watchdog** (see "Solved: controller rumble that doesn't stop"). Cvar **`sh_rumble_timeout_ms`** (10 s, 0 = off).
+23. `src/ui/rex_app.cpp` — **GPU backend selection**: new cvar **`gpu_backend`** (`any`/`d3d12`/`vulkan`, default `any`) passed to `LoadGpuPlugin`. With `REXGLUE_USE_VULKAN=ON` (CMake) the SDK's **Vulkan** backend is enabled (full Xenos renderer, Xenia port, already in the tree). The port (`src/splatterhouse_app.h`) sets the render target path in **`OnFinalizePaths`** (Vulkan→`fsi`, D3D12→`rov`): it's the only hook that runs with the GPU plugin already loaded (cvars registered) and before GPU init; in `OnPreSetup` it would be a no-op.
+    - **Vulkan backend status (2026-10): it works and is stable (0 AV/MISMATCH, 60 VdSwap/s).** The old "Vulkan renders GLOBALLY DARKER than D3D12" bug is **fixed** (SDK `src/graphics/pipeline/shader/spirv_translator_fetch.cpp`): the SPIR-V translator took the texture fetch **exponent bias** (`exp_adjust`, bits 13:18) from fetch-constant **word 4** (where those bits are part of `lod_bias`) instead of **word 3**, so every texture fetch was scaled by a garbage power of two (dark image, green often lost entirely). The DXBC translator always read word 3, which is why D3D12 looked right. It was **not** gamma, the swapchain or the resolve: verified by forcing pixel shaders / gamma ramp / texture fetches to white. Linux always uses Vulkan (`IsVulkanBackend()` returns true off Windows) with `render_target_path_vulkan='fsi'` (+ `vulkan_async_skip_incomplete_frames=false` to avoid skipping whole frames while pipelines compile; the D3D12 equivalent is skipping only draws). `present_effect='fsr'` doesn't apply to Vulkan (FidelityFX is built for D3D12).
+24. `src/graphics/d3d12/command_processor.cpp` — **`[sh-render]`** instrumentation (cvars `sh_render_profile`, `sh_render_profile_interval_s`, `sh_render_profile_top`): render workload profile per interval (draws/frame, VS:PS pairs by ucode hash, primitive type, and "passes" by format/base/pitch/msaa/depth with a pixel proxy from the scissor). Opt-in; used to characterize combat (see `docs/rov-performance.md` §3d): in combat ~1350 draws/frame, two dominant passes (scene + depth/shadows). Without `fsi`, Vulkan's default path (host render targets) leaves the scene almost black, same as RTV on D3D12.
 
-Cadena original `main`→crash resuelta; el init del **UI/Scaleform GFx** (atlas XCTD) y la **sincronización de critical sections** **también**. El juego carga el atlas completo, arranca el UI, llega a la **cinemática** y se mantiene **>2.5 min** sin AV ni FATAL ni `MISMATCH`.
+(`thirdparty/libmspack` is a pre-existing dirty submodule.)
 
-### Resuelto
+## Status and diagnosis
 
-1. **Interbloqueo ABBA de CS** (`0x40000618`): era un **ratchet por un `RtlLeave` perdido**, causado por un **bug de codegen**: el handler `__finally` `sub_822379F8` leía el flag de lock desde `[ctx.r31+96]` con `ctx.r31 = r12 - 320`, pero `r12` (establisher frame, no-ABI) **no se propagaba a `ctx`** → leía basura → saltaba el `RtlLeaveCriticalSection`. Corregido en el SDK (punto 6). Verificado: 0 flushes de ratchet, sin `lock_count=90`.
-2. **Funciones alcanzadas solo por llamada indirecta** no descubiertas (`Call to invalid or unregistered function`): resuelto con `dataPointerScan` (punto 5). Config `[functions]` en `config/codegen.toml` sigue disponible para casos sueltos.
-3. **Registros no-ABI `r0/r2/r11/r12`** no propagados entre llamadas (`__chkstk` tomaba tamaño 0): corregido (punto 6). Auditoría estática (lectura-antes-escritura) → 0 casos residuales en esos registros.
-4. **`assert_true` del CS en Debug** (`xboxkrnl_rtl.cpp:599`, `cs->owning_thread == 0`): diálogo modal de MSVC al arrancar el UI. Era una carrera de contabilidad del lock (en Release el assert está fuera y el código roba el lock). Suavizado en el SDK (punto 4).
-5. **`Call to invalid or unregistered function`** tras el selector de almacenamiento (`XamShowDeviceSelectorUI`): el análisis de codegen **fusionó funciones contiguas** y las entradas secundarias (thunks `lwz;lwz;mtctr;bctr` / `b tgt` con padding) quedaban inalcanzables. Se añadieron **63 direcciones** a `[functions]` de `config/codegen.toml` (detectadas con `C:\Users\josel\AppData\Local\Temp\opencode\scan_missing3.py`; lista en `config/missing_functions.txt`). El codegen avisa de 3 `bdz ... branches outside function` (0x8235B878/0x8235B888) — revisar si esa zona se usa.
-6. **`REX_UNIMPLEMENTED: vmaxuw`** (`splatterhouse_recomp.96.cpp:17341` y `recomp.137.cpp:18886`): instrucción VMX de máximo sin signo no implementada en el codegen. Implementado `build_vmaxuw` (punto 12). **No tiene relación con el `MISMATCH` de CS** (son problemas independientes).
-7. **Assert de vertex fetch en la cinemática** (`translator.cpp:411`, `assert_not_zero(fetch_instr.attributes.stride)`): suavizado (punto 13). Se ejecuta en `rexgpu-xenosd.dll`.
-8. **`RtlLeaveCriticalSection MISMATCH cs=40651480` + AV intermitentes**: **causa raíz** el bucle `[sh-fix]` "REPAIR" (punto 4). Robaba el lock a un dueño legítimo al muestrear la ventana transitoria `owner=0`/`lock_count` de `RtlLeaveCriticalSection`; el dueño luego desincronizaba `lock_count`/`owning_thread` → MISMATCH en cascada y corrupción (AV al leer punteros basura 0x5F7264 / 0x0700002C). Revertido al wait bloqueante de Xenia: **0 MISMATCH, 0 AV**.
-9. **`Call to invalid or unregistered function` en la tabla de callbacks del UI** (`0x825CB158` al llegar al menú/journal, `0x825CB170` en gameplay): son thunks de despacho virtual (`lwz;mr;lwz;lwz;mtctr;bctr`) fusionados por el análisis. Añadida la **tabla contigua completa `0x825CB108..0x825CB1B8`** a `[functions]` de `config/codegen.toml`. Verificado: 3 corridas de 60 s sin AV.
+The original `main`→crash chain is solved; the **UI/Scaleform GFx** init (XCTD atlas) and **critical section synchronization** **too**. The game loads the full atlas, starts the UI, reaches the **cutscene** and stays up **>2.5 min** without AV, FATAL or `MISMATCH`.
 
-### Resuelto: 60 FPS (parche oficial) + FSR
+### Solved
 
-- El juego venía clavado a **30 FPS**. Con `vsync=false` alcanza **300-500 FPS** → **no hay cap duro**: el 30 era **GPU-bound** (ruta ROV) + presentación sincronizada a vblank. CPU ~2%.
-- **Parche oficial de Xenia** (title `4E4D07F0`, `xenia-canary/game-patches`, autor *illusion*), aplicado **durable** (NO tocando `generated/`):
-  - **Datos**: floats `0x82F8FF58/5C` (1/15 y 1/30) → **1/60**. En `src/splatterhouse_app.h::ApplyGuestMemoryPatches` (`OnPostLoadXexImage`), activado por la cvar **`sh_60fps`** (on por defecto; definida en `src/main.cpp`).
-  - **Instrucción** `0x8247A4AC`: `stb r30,202(r31)` → `stb r11,202(r31)`. Replicado con un **override fuerte de la función weak del codegen** en `src/sh_60fps_hook.cpp` (define `sub_8247A368`, llama a `__imp__sub_8247A368` y fija `[obj+202]=arg`); añadido a `CMakeLists.txt`.
-  - **Ambas son necesarias**: solo los floats → sigue a 30.
-- **FSR** activado (ver Build). Con `present_effect="fsr"` + `video_mode 1920x1080` + fullscreen + vsync, el gameplay sostiene **60 FPS** (estado estacionario 100% ≥55; los 30 son carga/intro). `bilinear` da FPS similar (FSR es sobre todo **calidad** del reescalado); FSR2/3 son temporales **experimentales** (motion/depth sintetizados, pueden caer a FSR espacial). **DLSS/XeSS no son viables** (UE3 no expone motion vectors).
-- Diagnóstico: cvar **`sh_log_fps`** (log `[sh-fps] guest N FPS` cada 2 s) y log `[sh-fps] vblank pacing`, en el plugin GPU (`rexgpu-xenosrd.dll`).
-- **VSync OFF + present frame limiter (default)**: el port usa **`vsync=false` + `d3d12_present_frame_limiter=true` + `d3d12_present_frame_limiter_fps=60`**. Ojo: el limiter **solo** no evita el 60/30 — el frame que excede 16.6 ms sigue esperando al siguiente vblank del present y se queda en 30 (ver el punto de *Tearing*: por eso existe el **tearing adaptativo**). **Gotcha**: `vsync` y `d3d12_present_frame_limiter*` los registra el **plugin GPU**, que se carga **después** de `OnPreSetup` → allí `SetFlagByName` es un no-op. Los default se fijan en **`OnPostSetup`** (`src/splatterhouse_app.h`), que corre con el plugin ya cargado (y el worker de vblank lee `vsync` en vivo), o directamente en el `splatterhouse.toml` del instalador. Los logs `[sh-perf]`/`[sh-fps] vblank pacing` confirman los valores.
-- **Tearing**: con `vsync=false` el present usa `Present(0, ...)`. Estrategia (2026-10):
-  - **`d3d12_present_adaptive_tearing=true`** (default): el swapchain se crea siempre con `DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING` (si DXGI lo soporta) y el presenter mide cuánto tarda el frame en estar listo (desde que volvió el present anterior hasta **antes** de esperar al limiter). Si se acerca al presupuesto (>0.95 × 16.6 ms) pasa `DXGI_PRESENT_ALLOW_TEARING` (no bloquea → el ritmo baja progresivo 58, 52, 45…); si hay margen (<0.80 ×) lo quita (present sincronizado al vblank → **sin desgarro** a 60). Histeresis para no alternar. Hace falta porque con el present sincronizado al vblank un frame de 17 ms espera 33 ms y el juego **se queda clavado en 30** (el limiter solo reparte presents dentro de esa rejilla).
-  - **`d3d12_allow_variable_refresh_rate_and_tearing=true`** ("siempre (VRR)"): pasa `ALLOW_TEARING` en todos los frames, sin sincronía. Es lo suyo con **G-Sync/FreeSync** (sin desgarro y con latencia mínima), pero en un panel fijo **desgarra siempre** (se veía una línea en la parte superior porque los presents caen justo después del vblank). Por eso **ya no es el default**.
-  - Ambos `false` ("desactivado (60/30)"): comportamiento antiguo.
-  - Fila **Tearing / VRR** del F5 con esos 3 estados (**sin reinicio**: el swapchain ya se crea con el flag); fijarlo en el toml sigue siendo lo más cómodo.
-- **Aceleración ("cámara rápida") — RESUELTO**: el cvar **`vsync` estaba sobrecargado** y controlaba a la vez el present del host **y** la cadencia del **vblank del guest**. Con `vsync=false` el worker de vblank emitía vblanks a **~1000 Hz** (`guest_tick_frequency/1000`) en lugar de 60 Hz → los juegos que ligan el tiempo al vblank corrían **acelerados (×~16)**. Fix en `graphics_system.cpp`: el vblank del guest va **siempre** a la tasa del video mode (60 Hz), independientemente de `vsync`. Cvar **`sh_no_vsync_vblank_fast`** (default off) restaura el comportamiento antiguo. **No** tenía relación con `sh_60fps`.
-- **Medición definitiva (gameplay forzado con `sh_warp=lvl2_shanty`, corrida >2 min)**: con `vsync=false`+limiter el guest **presenta a ~60 VdSwap/s** de forma estable (`[sh-swap]`, instrumentación en `VdSwap`). CPU **1–5 % de 12 núcleos**; **GPU 3D 60–89 %**. Conclusión: **el port es GPU-bound (ruta ROV)**, no CPU-bound → repartir trabajo entre núcleos no ayuda. Los "parones" son momentos en que un frame **excede 16.6 ms** (GPU) y cae a **30** (mitad de vblank/limiter). Palancas reales: bajar `video_mode_*` (preset F5), abaratar ROV, o **`fullscreen=true`** (el `sh_warp`/arranque en ventana da menos FPS).
-- Nota: la cvar `video_mode_refresh_rate` (double con `.allowed`) **rechaza `"120.0"`** — usar `"120"`.
+1. **CS ABBA deadlock** (`0x40000618`): it was a **ratchet from a lost `RtlLeave`**, caused by a **codegen bug**: the `__finally` handler `sub_822379F8` read the lock flag from `[ctx.r31+96]` with `ctx.r31 = r12 - 320`, but `r12` (establisher frame, non-ABI) **wasn't propagated to `ctx`** → it read garbage → skipped `RtlLeaveCriticalSection`. Fixed in the SDK (item 6). Verified: 0 ratchet flushes, no `lock_count=90`.
+2. **Functions reached only through indirect calls** not discovered (`Call to invalid or unregistered function`): solved with `dataPointerScan` (item 5). The `[functions]` config in `config/codegen.toml` is still available for one-off cases.
+3. **Non-ABI registers `r0/r2/r11/r12`** not propagated across calls (`__chkstk` took size 0): fixed (item 6). Static audit (read-before-write) → 0 residual cases in those registers.
+4. **CS `assert_true` in Debug** (`xboxkrnl_rtl.cpp:599`, `cs->owning_thread == 0`): modal MSVC dialog when starting the UI. It was a lock bookkeeping race (in Release the assert is compiled out and the code steals the lock). Softened in the SDK (item 4).
+5. **`Call to invalid or unregistered function`** after the storage selector (`XamShowDeviceSelectorUI`): codegen analysis **merged contiguous functions** and the secondary entries (thunks `lwz;lwz;mtctr;bctr` / `b tgt` with padding) became unreachable. **63 addresses** were added to `[functions]` in `config/codegen.toml` (detected with `C:\Users\josel\AppData\Local\Temp\opencode\scan_missing3.py`; list in `config/missing_functions.txt`). Codegen warns about 3 `bdz ... branches outside function` (0x8235B878/0x8235B888) — check whether that area is used.
+6. **`REX_UNIMPLEMENTED: vmaxuw`** (`splatterhouse_recomp.96.cpp:17341` and `recomp.137.cpp:18886`): unsigned max VMX instruction not implemented in codegen. Implemented `build_vmaxuw` (item 12). **Unrelated to the CS `MISMATCH`** (independent problems).
+7. **Vertex fetch assert in the cutscene** (`translator.cpp:411`, `assert_not_zero(fetch_instr.attributes.stride)`): softened (item 13). Runs in `rexgpu-xenosd.dll`.
+8. **`RtlLeaveCriticalSection MISMATCH cs=40651480` + intermittent AVs**: **root cause** the `[sh-fix]` "REPAIR" loop (item 4). It stole the lock from a legitimate owner by sampling the transient `owner=0`/`lock_count` window of `RtlLeaveCriticalSection`; the owner then desynchronized `lock_count`/`owning_thread` → cascading MISMATCH and corruption (AV reading garbage pointers 0x5F7264 / 0x0700002C). Reverted to Xenia's blocking wait: **0 MISMATCH, 0 AV**.
+9. **`Call to invalid or unregistered function` in the UI callback table** (`0x825CB158` on reaching the menu/journal, `0x825CB170` in gameplay): they are virtual dispatch thunks (`lwz;mr;lwz;lwz;mtctr;bctr`) merged by the analysis. Added the **full contiguous table `0x825CB108..0x825CB1B8`** to `[functions]` in `config/codegen.toml`. Verified: 3 runs of 60 s without AV.
 
-### Añadido: pantalla de gráficos in-game (F5)
+### Solved: 60 FPS (official patch) + FSR
 
-- **No se puede editar el menú real**: el UI es **Scaleform GFx** y los `.gfx` son Flash compilado + **XCompress** (`0F F5 12 ED`), sin fuentes `.fla`; el SDK no trae descompresor XCompress offline (`XMemDecompress` lo implementa el engine guest). El layout vive dentro del `.gfx`.
-- **Solución (opción A)**: pantalla propia a **pantalla completa con estilo de juego** (fondo oscuro + rojo), NO una ventana flotante. `src/graphics_menu.h` (`GraphicsMenuDialog : rex::ui::ImGuiDialog`), abierta/cerrada por el keybind **`bind_graphics`** (F5 por defecto). Se integra en `src/splatterhouse_app.h::OnCreateDialogs`. El diálogo se registra en el `ImGuiDrawer` y se auto-borra con `Close()`; el puntero global `g_graphics_menu` evita dangling.
-- **F5 (importante)**: el keybind **no se disparaba** porque el `ImGuiDrawer` se registra como input listener con **z-order 64** y consume la tecla antes. Solución: un **`WindowInputListener` propio con z-order 128** (`SplatterhouseApp::GraphicsKeyListener`, añadido en `OnCreateDialogs` con `window()->AddInputListener(..., 128)` y quitado en `OnShutdown`) que maneja F5 antes que ImGui. `ReXApp::OnKeyDown` es **privado** → no se puede sobrescribir.
-- **Teclado del menú (no usar `ImGui::IsKeyPressed`)**: el menú **no lee teclas de ImGui**. `SplatterhouseApp::GraphicsKeyListener` (z-order 128, el primero que las ve) llama a `GraphicsMenuDialog::PushKey`/`ReleaseKey` y el menú consume la cola en `OnDraw`; con el menú abierto las teclas se marcan `handled` para que el juego no las vea. Motivo: el `ImGuiDrawer` sí hace `io.AddKeyEvent`, pero la ruta de teclado de ImGui no es fiable aquí (depende del foco de la ventana y de que se llegue a pintar un frame). Solo el ratón sigue viniendo de ImGui (`io.MouseWheel`).
-- **Hover no puede fijar la selección** (bug): si `selected_ = hovered_` se reasigna en cada frame, la fila bajo el cursor queda fijada y **el teclado y la rueda no hacen nada**; el scroll solo parecía funcionar al mover el ratón al final de la lista (donde la fila se sale de debajo del cursor y deja de pisar la selección). Ahora el hover solo mueve la selección **si el ratón se ha movido de verdad** (`last_mouse_`/`hovered_`), el click selecciona+cambia, y la rueda mueve la selección con el ratón dentro del panel (`mouse_in_panel`).
-- **Opciones** (leen/escriben cvars; `S` = guardar en `splatterhouse.toml`, Esc/F5 = cerrar), agrupadas en secciones con títulos (`Row::header`, no seleccionables) y con **scroll** (la lista no cabe; `first_row_`/`visible_rows_` mantienen la selección a la vista, rueda del ratón o flechas para moverse):
-  - **Imagen**: Preset (Bajo/Medio/Alto/Ultra; fija `video_mode_*`, `texture_cache_memory_limit_soft` y `present_effect="fsr"`; conserva el aspecto y el label se deduce de la config), Resolución interna (640x360…**3440x1440**, incluye 2560x1080), **Aspecto interno** (`sh_aspect`: auto/16:9/21:9/32:9), Escala de dibujo (`resolution_scale`, tope 2560 px de ancho por el hang de ROV), Ruta de render (`auto`/`rtv`/`rov`).
-  - **Reescalado y presentación**: Presentación (`bilinear`/`cas`/`fsr`/`fsr2`/`fsr3`), **Calidad FSR** (`present_fsr_quality_mode`: auto/nativeaa/quality/balanced/performance/ultra_performance), Nitidez FSR, **Antialias presentación** (`swap_post_effect`: none/fxaa/fxaa_extreme), Dither, **Letterbox** (`present_letterbox`).
-  - **Pantalla**: Pantalla completa (`fullscreen`), **Tamaño ventana** (`window_width`/`window_height`, 0 = automático), **Frecuencia** (`video_mode_refresh_rate`, solo valores de su `.allowed`), VSync, Límite de FPS, **Tearing/VRR** (`d3d12_allow_variable_refresh_rate_and_tearing`).
-  - **Calidad**: **Cache de texturas (MB)** (`texture_cache_memory_limit_soft`), **MSAA 2x nativo** (`native_2x_msaa`), **Filtro anisotrópico** (`anisotropic_override`: auto/-1, off/0, 2/4/8/16).
-  - **Rendimiento**: Shaders en segundo plano (`async_shader_compilation`), PSO sin bloqueos (`sh_pso_async`), **Hilos para crear PSO** (`d3d12_pipeline_creation_threads`: auto/-1, 2/4/8/16).
-  - **Juego**: Parche 60 FPS (`sh_60fps`), Desbloquear niveles, **Nivel máximo** (`sh_unlock_levels_max`), Idioma.
-  - **Entrada y audio**: **Backend de input** (`input_backend`: sdl/xinput), **Vibración máxima (ms)** (`sh_rumble_timeout_ms`: 0 = off), Silenciar (`audio_mute`).
-  - **Desarrollo**: Warp nivel (dev), Salir del juego.
-  - Las filas cuya cvar **no está registrada** se **ocultan** (`Available()` → `rex::cvar::GetFlagInfo(name)`): algunas opciones dependen de cómo se compiló el runtime (la calidad FSR solo existe con `REXGLUE_ENABLE_FIDELITYFX=ON`, y en `src/` hay un `#else` que solo declara `present_effect="bilinear"`) o de que el plugin de GPU esté cargado. Sin ese filtro se ofrecerían valores que luego `SetFlagByName` rechaza (`ValidateConstraints`).
-  - `cycle_string` **respeta `.allowed()`**: los valores escritos tienen que salir en la lista `.allowed` del cvar o el write se rechaza (p. ej. `video_mode_refresh_rate` no acepta `"120.0"`, hay que `"120"`).
-  - El pie muestra los **cvars pendientes de reinicio** (`rex::cvar::GetPendingRestartFlags()`) y el rango visible (`[X-Y de N]`). Cambiar cualquier fila fuera del Preset pasa el Preset a "Personalizado".
-- **Salir del juego**: última fila, en rojo, **a dos pasos** para no cerrar por error — el primer cambio la arma ("confirmar (Si/No)") y el segundo (derecha/Enter/click) cierra; izquierda la desarma. Guarda el `splatterhouse.toml` si había cambios sin guardar y llama a `window()->RequestClose()` (`SplatterhouseApp::QuitGame`). Ojo: `Close()` borra el diálogo, así que el callback se copia a un local **antes** de llamar.
-- **Salir del juego ≠ `RequestDeferredQuit` (bug)**: `app_context().RequestDeferredQuit()` **crashea** aquí. Ese camino saca del bucle de mensajes → `ReXApp::OnDestroy()`, que destruye el `ImGuiDrawer` y el presenter **mientras el hilo guest sigue emulando**, y luego hace `module_thread_.join()` sobre un hilo que nunca termina (el juego emulado no acaba solo) → crash/colgado. El propio SDK lo evita: `ReXApp::OnClosing` (`src/ui/rex_app.cpp:498`) hace `TerminateTitle()` + `rex::FlushLogging()` + **`std::_Exit(0)`** en vez del teardown normal, con el comentario de que el teardown puede deadlockear con un `TerminateTitle` rezagado. La vía correcta es **`window()->RequestClose()`** (igual que la X): `RequestCloseImpl` → `PerformClose` → `Window::OnBeforeClose` → `listener->OnClosing` → `_Exit(0)`. El proceso muere dentro de la llamada, así que no se toca nada después.
-- **Nota de layout**: la columna de valores se coloca en `panel_x + panel_w*0.58` para no cortar el `[reinicio]`; en **windowed** con `window_width` mayor que el escritorio el overlay puede quedar recortado (usar fullscreen o `window_width=0`).
-- **Pendiente**: engancharla al **menú de pausa del juego** (hoy se abre con tecla). Requeriría RE del estado de pausa.
-- Diagnóstico: cvar `sh_graphics_menu` (si true, la abre al arrancar; útil para capturas).
+- The game was locked at **30 FPS**. With `vsync=false` it reaches **300-500 FPS** → **there is no hard cap**: the 30 was **GPU-bound** (ROV path) + vblank-synced presentation. CPU ~2%.
+- **Official Xenia patch** (title `4E4D07F0`, `xenia-canary/game-patches`, author *illusion*), applied **durably** (NOT touching `generated/`):
+  - **Data**: floats `0x82F8FF58/5C` (1/15 and 1/30) → **1/60**. In `src/splatterhouse_app.h::ApplyGuestMemoryPatches` (`OnPostLoadXexImage`), enabled by the cvar **`sh_60fps`** (on by default; defined in `src/main.cpp`).
+  - **Instruction** `0x8247A4AC`: `stb r30,202(r31)` → `stb r11,202(r31)`. Replicated with a **strong override of the codegen's weak function** in `src/sh_60fps_hook.cpp` (defines `sub_8247A368`, calls `__imp__sub_8247A368` and sets `[obj+202]=arg`); added to `CMakeLists.txt`.
+  - **Both are required**: floats alone → still 30.
+- **FSR** enabled (see Build). With `present_effect="fsr"` + `video_mode 1920x1080` + fullscreen + vsync, gameplay holds **60 FPS** (steady state 100% ≥55; the 30s are loading/intro). `bilinear` gives similar FPS (FSR is mostly about upscaling **quality**); FSR2/3 are **experimental** temporal modes (synthesized motion/depth, may fall back to spatial FSR). **DLSS/XeSS aren't viable** (UE3 doesn't expose motion vectors).
+- Diagnostics: cvar **`sh_log_fps`** (log `[sh-fps] guest N FPS` every 2 s) and log `[sh-fps] vblank pacing`, in the GPU plugin (`rexgpu-xenosrd.dll`).
+- **VSync OFF + present frame limiter (default)**: the port uses **`vsync=false` + `d3d12_present_frame_limiter=true` + `d3d12_present_frame_limiter_fps=60`**. Note: the limiter **alone** doesn't prevent 60/30 — a frame that exceeds 16.6 ms still waits for the next present vblank and stays at 30 (see the *Tearing* item: that's why **adaptive tearing** exists). **Gotcha**: `vsync` and `d3d12_present_frame_limiter*` are registered by the **GPU plugin**, which loads **after** `OnPreSetup` → there `SetFlagByName` is a no-op. The defaults are set in **`OnPostSetup`** (`src/splatterhouse_app.h`), which runs with the plugin already loaded (and the vblank worker reads `vsync` live), or directly in the installer's `splatterhouse.toml`. The `[sh-perf]`/`[sh-fps] vblank pacing` logs confirm the values.
+- **Tearing**: with `vsync=false` the present uses `Present(0, ...)`. Strategy (2026-10):
+  - **`d3d12_present_adaptive_tearing=true`** (default): the swapchain is always created with `DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING` (if DXGI supports it) and the presenter measures how long the frame takes to be ready (from when the previous present returned until **before** waiting on the limiter). If it nears the budget (>0.95 × 16.6 ms) it passes `DXGI_PRESENT_ALLOW_TEARING` (doesn't block → the pace drops gradually 58, 52, 45…); if there's headroom (<0.80 ×) it removes it (vblank-synced present → **no tearing** at 60). Hysteresis to avoid flip-flopping. It's needed because with a vblank-synced present a 17 ms frame waits 33 ms and the game **gets stuck at 30** (the limiter only spreads presents within that grid).
+  - **`d3d12_allow_variable_refresh_rate_and_tearing=true`** ("always (VRR)"): passes `ALLOW_TEARING` on every frame, unsynced. That's the right choice with **G-Sync/FreeSync** (no tearing and minimal latency), but on a fixed-refresh panel it **always tears** (a line was visible at the top because presents land right after the vblank). That's why it is **no longer the default**.
+  - Both `false` ("off (60/30)"): old behavior.
+  - F5 **Tearing / VRR** row with those 3 states (**no restart**: the swapchain is already created with the flag); setting it in the toml is still the most convenient.
+- **Speed-up ("fast motion") — SOLVED**: the **`vsync` cvar was overloaded** and controlled both the host present **and** the cadence of the **guest vblank**. With `vsync=false` the vblank worker emitted vblanks at **~1000 Hz** (`guest_tick_frequency/1000`) instead of 60 Hz → games that tie time to the vblank ran **sped up (×~16)**. Fix in `graphics_system.cpp`: the guest vblank **always** runs at the video mode rate (60 Hz), regardless of `vsync`. Cvar **`sh_no_vsync_vblank_fast`** (default off) restores the old behavior. It was **not** related to `sh_60fps`.
+- **Definitive measurement (gameplay forced with `sh_warp=lvl2_shanty`, run >2 min)**: with `vsync=false`+limiter the guest **presents at ~60 VdSwap/s** steadily (`[sh-swap]`, instrumentation in `VdSwap`). CPU **1–5 % of 12 cores**; **GPU 3D 60–89 %**. Conclusion: **the port is GPU-bound (ROV path)**, not CPU-bound → spreading work across cores doesn't help. The "hitches" are moments when a frame **exceeds 16.6 ms** (GPU) and drops to **30** (half vblank/limiter). Real levers: lower `video_mode_*` (F5 preset), make ROV cheaper, or **`fullscreen=true`** (`sh_warp`/starting windowed gives fewer FPS).
+- Note: the cvar `video_mode_refresh_rate` (double with `.allowed`) **rejects `"120.0"`** — use `"120"`.
 
-### Resuelto: localización (texto) con audio siempre en inglés
+### Added: in-game graphics screen (F5)
 
-- El juego (Gamebryo) obtiene el nombre del idioma con **`sub_827B65E0(this)`** = `tabla[this+120]` (tabla guest **`0x82F90110`** = `{English,French,Italian,German,Spanish,Japanese}`) y construye `data/localization/%s.xml`. **No** usa `XGetLanguage`.
-- Esa función tiene **dos** call sites: **`sub_82E786E8`** (arranque temprano/audio) y **`sub_8277CFC8`** (`LocalizationManager::LoadLanguage`). Forzar el idioma en **ambos** crashea (strlen sobre puntero malo en `sub_829C3AF0`) — el copy solo está doblado a English(US).
-- **Solución** (`src/sh_language_hook.cpp`): override weak de `sub_827B65E0` que **solo** cambia el idioma cuando la llamada viene de `sub_8277CFC8`, distinguido por el **return address del host** (`__builtin_return_address(0)` vs `&sub_8277CFC8`/`&sub_82E786E8`). Devuelve el nombre en **minúsculas** (los ficheros son `spanish.xml`). El arranque/audio queda en English → **texto localizado, audio inglés, sin crash** (verificado: menú en español).
-- Cvar **`sh_language`** (`auto` = locale del host, `default` = original, o `english/french/italian/german/spanish/japanese`); fila **Idioma** en la pantalla F5. También cvar `user_language` en el SDK para `XGetLanguage`.
+- **The real menu can't be edited**: the UI is **Scaleform GFx** and the `.gfx` files are compiled Flash + **XCompress** (`0F F5 12 ED`), without `.fla` sources; the SDK has no offline XCompress decompressor (`XMemDecompress` is implemented by the guest engine). The layout lives inside the `.gfx`.
+- **Solution (option A)**: our own **full-screen game-styled** screen (dark background + red), NOT a floating window. `src/graphics_menu.h` (`GraphicsMenuDialog : rex::ui::ImGuiDialog`), opened/closed by the keybind **`bind_graphics`** (F5 by default). Integrated in `src/splatterhouse_app.h::OnCreateDialogs`. The dialog registers itself with the `ImGuiDrawer` and self-deletes on `Close()`; the global pointer `g_graphics_menu` avoids dangling.
+- **F5 (important)**: the keybind **didn't fire** because the `ImGuiDrawer` registers as an input listener with **z-order 64** and consumes the key first. Solution: our own **`WindowInputListener` with z-order 128** (`SplatterhouseApp::GraphicsKeyListener`, added in `OnCreateDialogs` with `window()->AddInputListener(..., 128)` and removed in `OnShutdown`) that handles F5 before ImGui. `ReXApp::OnKeyDown` is **private** → it can't be overridden.
+- **Menu keyboard (don't use `ImGui::IsKeyPressed`)**: the menu **doesn't read keys from ImGui**. `SplatterhouseApp::GraphicsKeyListener` (z-order 128, the first to see them) calls `GraphicsMenuDialog::PushKey`/`ReleaseKey` and the menu consumes the queue in `OnDraw`; with the menu open the keys are marked `handled` so the game doesn't see them. Reason: the `ImGuiDrawer` does call `io.AddKeyEvent`, but ImGui's keyboard path isn't reliable here (it depends on window focus and on a frame actually being drawn). Only the mouse still comes from ImGui (`io.MouseWheel`).
+- **Hover must not pin the selection** (bug): if `selected_ = hovered_` is reassigned every frame, the row under the cursor stays pinned and **keyboard and wheel do nothing**; scrolling only seemed to work by moving the mouse to the end of the list (where the row slips out from under the cursor and stops overriding the selection). Now hover only moves the selection **if the mouse actually moved** (`last_mouse_`/`hovered_`), click selects+changes, and the wheel moves the selection with the mouse inside the panel (`mouse_in_panel`).
+- **Options** (read/write cvars; `S` = save to `splatterhouse.toml`, Esc/F5 = close), grouped into sections with titles (`Row::header`, not selectable) and with **scrolling** (the list doesn't fit; `first_row_`/`visible_rows_` keep the selection in view, mouse wheel or arrows to move):
+  - **Interface**: **Menu language** (`sh_menu_language`: english/spanish). Translates the F5 screen itself at draw time (`GraphicsMenuDialog::L()`: English strings are the keys of a Spanish lookup table, so any new menu string needs an entry there); no restart.
+  - **Image**: Preset (Low/Medium/High/Ultra; sets `video_mode_*`, `texture_cache_memory_limit_soft` and `present_effect="fsr"`; keeps the aspect and the label is derived from the config), Internal resolution (640x360…**3440x1440**, includes 2560x1080), **Internal aspect** (`sh_aspect`: auto/16:9/21:9/32:9), Draw scale (`resolution_scale`, capped at 2560 px wide because of the ROV hang), Render path (`auto`/`rtv`/`rov`).
+  - **Upscaling and presentation**: Presentation (`bilinear`/`cas`/`fsr`/`fsr2`/`fsr3`), **FSR quality** (`present_fsr_quality_mode`: auto/nativeaa/quality/balanced/performance/ultra_performance), Sharpness (FSR), **Presentation antialiasing** (`swap_post_effect`: none/fxaa/fxaa_extreme), Dither, **Letterbox** (`present_letterbox`).
+  - **Display**: Fullscreen (`fullscreen`), **Window size** (`window_width`/`window_height`, 0 = automatic), **Refresh rate** (`video_mode_refresh_rate`, only values from its `.allowed`), VSync, FPS limit, **Tearing/VRR** (`d3d12_allow_variable_refresh_rate_and_tearing`).
+  - **Quality**: **Texture cache (MB)** (`texture_cache_memory_limit_soft`), **Native 2x MSAA** (`native_2x_msaa`), **Anisotropic filtering** (`anisotropic_override`: auto/-1, off/0, 2/4/8/16).
+  - **Performance**: Background shaders (`async_shader_compilation`), Non-blocking PSO (`sh_pso_async`), **PSO creation threads** (`d3d12_pipeline_creation_threads`: auto/-1, 2/4/8/16).
+  - **Game**: 60 FPS patch (`sh_60fps`), Unlock levels, **Max level** (`sh_unlock_levels_max`), Game language (`sh_language`).
+  - **Input and audio**: **Input backend** (`input_backend`: sdl/xinput), **Max rumble (ms)** (`sh_rumble_timeout_ms`: 0 = off), Mute (`audio_mute`).
+  - **Development**: Level warp (dev), Quit game.
+  - Rows whose cvar **isn't registered** are **hidden** (`Available()` → `rex::cvar::GetFlagInfo(name)`): some options depend on how the runtime was built (FSR quality only exists with `REXGLUE_ENABLE_FIDELITYFX=ON`, and in `src/` there's an `#else` that only declares `present_effect="bilinear"`) or on the GPU plugin being loaded. Without that filter the menu would offer values that `SetFlagByName` then rejects (`ValidateConstraints`).
+  - `cycle_string` **respects `.allowed()`**: the written values must appear in the cvar's `.allowed` list or the write is rejected (e.g. `video_mode_refresh_rate` doesn't accept `"120.0"`, it has to be `"120"`).
+  - The footer shows the **cvars pending restart** (`rex::cvar::GetPendingRestartFlags()`) and the visible range (`[X-Y of N]`). Changing any row other than Preset switches the Preset to "Custom".
+- **Quit game**: last row, in red, **two-step** so it isn't closed by mistake — the first change arms it ("confirm (Yes/No)") and the second (right/Enter/click) closes; left disarms it. It saves `splatterhouse.toml` if there were unsaved changes and calls `window()->RequestClose()` (`SplatterhouseApp::QuitGame`). Note: `Close()` deletes the dialog, so the callback is copied to a local **before** calling it.
+- **Quit game ≠ `RequestDeferredQuit` (bug)**: `app_context().RequestDeferredQuit()` **crashes** here. That path leaves the message loop → `ReXApp::OnDestroy()`, which destroys the `ImGuiDrawer` and the presenter **while the guest thread is still emulating**, and then does `module_thread_.join()` on a thread that never ends (the emulated game doesn't finish on its own) → crash/hang. The SDK itself avoids it: `ReXApp::OnClosing` (`src/ui/rex_app.cpp:498`) does `TerminateTitle()` + `rex::FlushLogging()` + **`std::_Exit(0)`** instead of the normal teardown, with the comment that the teardown can deadlock with a straggling `TerminateTitle`. The correct path is **`window()->RequestClose()`** (same as the X): `RequestCloseImpl` → `PerformClose` → `Window::OnBeforeClose` → `listener->OnClosing` → `_Exit(0)`. The process dies inside the call, so nothing is touched afterwards.
+- **Layout note**: the value column is placed at `panel_x + panel_w*0.58` so `[restart]` isn't cut off; in **windowed** mode with `window_width` larger than the desktop the overlay may be clipped (use fullscreen or `window_width=0`).
+- **Pending**: hook it into the **game's pause menu** (today it's opened with a key). Would require RE of the pause state.
+- Diagnostics: cvar `sh_graphics_menu` (if true, opens it on startup; useful for screenshots).
 
-### Resuelto: desbloquear niveles/capítulos (NO es "Global Conditions")
+### Solved: localization (text) with audio always in English
 
-- **La hipótesis de "Global Conditions" era incorrecta**: el save (`GameSave.sav`, **plaintext**) solo guarda condiciones de skills/collectibles/arenas, no capítulos. El desbloqueo real es la **progresión de nivel** del `GameSaveManager`.
-- **Mecanismo** (verificado con instrumentación runtime): el frontend Scaleform pregunta `GetHighestLevelCompleted`. Se resuelve en el getter de stats por nombre **`sub_82E5C540(this, name)`** (`generated/splatterhouse_recomp.81.cpp:37020`), que para ese nombre devuelve **`[statsObj+392]`** como **`char*`** (`r3`); el handler AS que lo llama es `sub_82E21EF8` (registrado como `GetStat` en `sub_82F044C8`/`recomp.84.cpp:39024`). Fuente alternativa: `GetHighestReachedLevel` → handler `sub_82F037B8` → **`sub_82EF0FE0(saveObj)`** (`recomp.161.cpp:37663`), que recorre el array `[saveObj+16]` (el tamaño sale del manager de dificultades en `0x831A7570`; **count=3 = dificultades, NO niveles**).
-- **Solución** (`src/sh_unlock_hook.cpp`): overrides weak de **`sub_82E5C540`** (devuelve `sh_unlock_levels_max`, por defecto **7**, como string en buffer guest) y de **`sub_82EF0FE0`** (devuelve el máximo). Cvar **`sh_unlock_levels`** (on por defecto) + **`sh_unlock_levels_max`**; fila **Desbloquear niveles** en la pantalla F5. Cvar **`sh_unlock_debug`** (one-shot) loguea las consultas. Verificado: `GetHighestLevelCompleted original=0 -> 7`, sin AV.
-- **Nota**: los directorios de nivel son `lvl1..lvl5` y `lvl7` (no hay `lvl6`), pero el **selector muestra 8 capítulos** (confirmado por el usuario). Con `sh_unlock_levels_max=7` salen todos: la condición de desbloqueo es `capítulo <= completado+1`, así que 7 basta para el 8º. Si alguno quedara bloqueado, subir el cvar (p. ej. 8).
+- The game (Gamebryo) gets the language name with **`sub_827B65E0(this)`** = `table[this+120]` (guest table **`0x82F90110`** = `{English,French,Italian,German,Spanish,Japanese}`) and builds `data/localization/%s.xml`. It does **not** use `XGetLanguage`.
+- That function has **two** call sites: **`sub_82E786E8`** (early startup/audio) and **`sub_8277CFC8`** (`LocalizationManager::LoadLanguage`). Forcing the language at **both** crashes (strlen on a bad pointer in `sub_829C3AF0`) — this copy is only dubbed in English(US).
+- **Solution** (`src/sh_language_hook.cpp`): weak override of `sub_827B65E0` that **only** changes the language when the call comes from `sub_8277CFC8`, distinguished by the **host return address** (`__builtin_return_address(0)` vs `&sub_8277CFC8`/`&sub_82E786E8`). Returns the name in **lowercase** (the files are `spanish.xml`). Startup/audio stays in English → **localized text, English audio, no crash** (verified: menu in Spanish).
+- Cvar **`sh_language`** (`auto` = host locale, `default` = original, or `english/french/italian/german/spanish/japanese`); **Game language** row in the F5 screen. There's also the SDK cvar `user_language` for `XGetLanguage`.
 
-### Resuelto: DLC (Survival Arenas, máscaras, etc.)
+### Solved: unlocking levels/chapters (it is NOT "Global Conditions")
 
-- **Sí se pueden jugar los DLC** si el usuario tiene los paquetes. La cadena: en X360 el DLC era un **paquete STFS** (`CON `/`LIVE`/`PIRS`) que la consola montaba como `XContent` con un `info.xml` que declara niveles (`DownloadPackage` → `<Level><Flag name="Is DLC" val="1"/>`). El engine (`DownloadManagerXenon` → `LevelDatabase::AddDLCLevel`) enumera/abre el contenido y añade los niveles al `leveldb`.
-- **El runtime ya implementaba** `XamContent*` (`ContentManager`: enumerar/crear/abrir/montar + license mask) y monta el paquete como device VFS; el engine lee el `info.xml` del paquete montado. **Faltaba instalar** los paquetes.
-- **Implementado**: `SplatterhouseApp::InstallDlcPackages()` (`OnPostLoadXexImage`) busca STFS en `Documents\splatterhouse\<title>\00000002`, `…\0000000000000000\<title>\00000002` y **cualquier `<xuid>\<title>\00000002`**; `ContentManager::InstallContentFromDirectory` (nuevo) los detecta por magic y los instala (`InstallContent`: extrae a `…/0000000000000000/<title>/00000002/<file>/` + escribe `.header` + license mask). Idempotente.
-- **Verificado**: con 6 paquetes en `B13EBABEBABEBABE\4E4D07F0\00000002`: se instalan los 6; el juego hace `XamContentCreateEnumerator type=00000002 -> 6 item(s)` y `XamContentCreate type=00000002` (abre el paquete); **el usuario confirma ver los DLC y las máscaras en el menú**.
-- **`XamContentOpenFile` es un stub** en el SDK (devuelve not-found) pero **no hace falta**: el engine lee los ficheros del paquete por el VFS montado.
-- Diagnóstico: **`REX_SH_DLC=1`** (opt-in) loguea la enumeración/apertura. Doc completa en **`docs/dlc.md`**.
+- **The "Global Conditions" hypothesis was wrong**: the save (`GameSave.sav`, **plaintext**) only stores skill/collectible/arena conditions, not chapters. The real unlock is the `GameSaveManager`'s **level progression**.
+- **Mechanism** (verified with runtime instrumentation): the Scaleform frontend asks for `GetHighestLevelCompleted`. It resolves in the stats-by-name getter **`sub_82E5C540(this, name)`** (`generated/splatterhouse_recomp.81.cpp:37020`), which for that name returns **`[statsObj+392]`** as a **`char*`** (`r3`); the AS handler that calls it is `sub_82E21EF8` (registered as `GetStat` in `sub_82F044C8`/`recomp.84.cpp:39024`). Alternative source: `GetHighestReachedLevel` → handler `sub_82F037B8` → **`sub_82EF0FE0(saveObj)`** (`recomp.161.cpp:37663`), which walks the array `[saveObj+16]` (the size comes from the difficulty manager at `0x831A7570`; **count=3 = difficulties, NOT levels**).
+- **Solution** (`src/sh_unlock_hook.cpp`): weak overrides of **`sub_82E5C540`** (returns `sh_unlock_levels_max`, **7** by default, as a string in a guest buffer) and of **`sub_82EF0FE0`** (returns the maximum). Cvar **`sh_unlock_levels`** (on by default) + **`sh_unlock_levels_max`**; **Unlock levels** row in the F5 screen. Cvar **`sh_unlock_debug`** (one-shot) logs the queries. Verified: `GetHighestLevelCompleted original=0 -> 7`, no AV.
+- **Note**: the level directories are `lvl1..lvl5` and `lvl7` (there's no `lvl6`), but the **selector shows 8 chapters** (confirmed by the user). With `sh_unlock_levels_max=7` all of them appear: the unlock condition is `chapter <= completed+1`, so 7 is enough for the 8th. If any stayed locked, raise the cvar (e.g. 8).
 
-### Resuelto: issues del repo (2026-10)
+### Solved: DLC (Survival Arenas, masks, etc.)
 
-**#4 — `splatterhouse.exe` arranca a pantalla negra y se cierra tras extraer la ISO.**
-- **Causa**: los assets no estaban donde el runtime los busca (faltaba `data\`), el guest arrancaba igual, no encontraba `data\localization\english.xml` ni `data\swf\...`, y moría con `Unhandled guest access violation: write of guest 0x00000008` (`sub_82232798`), sin ningún mensaje útil.
-- **Fix** (`src/splatterhouse_app.h`): `OnConfigurePaths` **localiza la raíz de datos por contenido** (`default.xex`/`default.dec.xex` + `data\`), no por existir la carpeta: prueba `game_data_root` de la cvar, `assets\`, la carpeta del exe (layout de desarrollo) y **carpetas anidadas dentro de `assets\`** (ISO extraída a mano sin aplanar). Después valida `default.xex`, `data\`, `data\localization\*.xml` y `data\swf\`; si falta algo muestra el detalle en **`assets_error.txt`** (junto al exe) y en una consola, y sale limpio **antes** de crear ventana/GPU. Escape hatch: cvar **`sh_skip_assets_check=true`**.
-- **Instalador**: `install.bat` ahora verifica tras extraer que existan `default.xex` + `data\` (avisa en vez de instalar a medias) y busca la ISO también un nivel más abajo.
-- **Ojo**: antes `assets\` se usaba como raíz con solo existir (en este repo contiene únicamente un `README.md`), lo que rompía el layout de desarrollo.
+- **DLC can be played** if the user has the packages. The chain: on X360 DLC was an **STFS package** (`CON `/`LIVE`/`PIRS`) that the console mounted as `XContent` with an `info.xml` declaring levels (`DownloadPackage` → `<Level><Flag name="Is DLC" val="1"/>`). The engine (`DownloadManagerXenon` → `LevelDatabase::AddDLCLevel`) enumerates/opens the content and adds the levels to the `leveldb`.
+- **The runtime already implemented** `XamContent*` (`ContentManager`: enumerate/create/open/mount + license mask) and mounts the package as a VFS device; the engine reads the `info.xml` from the mounted package. **What was missing was installing** the packages.
+- **Implemented**: `SplatterhouseApp::InstallDlcPackages()` (`OnPostLoadXexImage`) looks for STFS in `Documents\splatterhouse\<title>\00000002`, `…\0000000000000000\<title>\00000002` and **any `<xuid>\<title>\00000002`**; `SplatterhouseApp::InstallStfsPackagesFrom` detects them by magic and installs them via the public `ContentManager::InstallContent`, skipping ones `ContentExists` already reports (`InstallContent`: extracts to `…/0000000000000000/<title>/00000002/<file>/` + writes `.header` + license mask). Idempotent.
+- **Verified**: with 6 packages in `B13EBABEBABEBABE\4E4D07F0\00000002`: all 6 install; the game does `XamContentCreateEnumerator type=00000002 -> 6 item(s)` and `XamContentCreate type=00000002` (opens the package); **the user confirms seeing the DLC and the masks in the menu**.
+- **`XamContentOpenFile` is a stub** in the SDK (returns not-found) but **isn't needed**: the engine reads the package files through the mounted VFS.
+- Diagnostics: **`REX_SH_DLC=1`** (opt-in) logs enumeration/opening. Full doc in **`docs/dlc.md`**.
 
-**#6 — soporte ultrawide.**
-- **Automático** (cvar **`sh_aspect`**, default `auto`): al arrancar se ajusta el **ancho** del modo de video del guest al aspecto de la **ventana/pantalla** (el alto se respeta), de modo que el juego renderiza 21:9/32:9 **nativo** y el presenter no pone bandas. Verificado con ventana 2560x1080 + `video_mode 1920x1080`: se reescribe a 2560x1080 y la escena/UI llenan la ventana (sin bandas ni estiramiento). Log: `[sh-aspect] auto: modo interno 2560x1080 (antes 1920x1080, pantalla 2.37:1)`.
-- Valores: `auto`, `16:9`, `21:9`, `32:9` (`keep` = no tocar; lo pone la fila "Resolucion interna" al elegir un modo a mano). Fila **Aspecto interno** en F5.
-- **Añadido** (F5): resoluciones internas **2560x1080 / 3440x1440** (límite del video mode del guest: 4095 px de ancho) y tamaños de ventana **2560x1080 / 2560x1440 / 3440x1440 / 3840x1080**.
-- Los **presets ya no rompen el aspecto**: fijan la resolución *vertical* (540/720/900/1080) y calculan el ancho con el aspecto actual, redondeado a múltiplo de 8.
-- Si se fuerza `sh_aspect=16:9` con una ventana 21:9, el presenter **pilla barras** (pillarbox) o estira según **`present_letterbox`**.
+### Solved: repo issues (2026-10)
 
-**F5: guardado/carga de ajustes (reportado junto con #6).**
-- **Flags "pendiente de reinicio" falsos**: `SetFlagFromSource` marcaba como pendientes también los valores cargados del **toml** (y los que fija el port al arrancar), así que el pie del menú decía "Reiniciar para aplicar: video_mode_*" nada más abrir. Ahora `Source::kConfig` no marca pendiente y el port limpia la lista al final de `OnPostSetup`.
-- **Preset mostrado**: la fila Preset ponía siempre "Ultra". Ahora se deduce de la configuración (`DetectPresetIndex()`: alto + cache de texturas).
-- **Guardar borraba los comentarios del toml** (toml++ no los conserva al reescribir): antes de reescribir se copia el fichero anterior a **`splatterhouse.toml.bak`**.
-- Verificado con teclas reales simuladas (WM_KEYDOWN + scancode): F5 → bajar a "Resolucion interna" → derecha (1280x720 → 1600x900) → S → Esc; el toml queda con `video_mode_width=1600`, `video_mode_height=900`, `sh_aspect='keep'` y el `.bak` con el fichero previo.
+**#4 — `splatterhouse.exe` starts to a black screen and closes after extracting the ISO.**
+- **Cause**: the assets weren't where the runtime looks for them (`data\` was missing), the guest started anyway, couldn't find `data\localization\english.xml` or `data\swf\...`, and died with `Unhandled guest access violation: write of guest 0x00000008` (`sub_82232798`), without any useful message.
+- **Fix** (`src/splatterhouse_app.h`): `OnConfigurePaths` **locates the data root by content** (`default.xex`/`default.dec.xex` + `data\`), not by the folder merely existing: it tries the `game_data_root` cvar, `assets\`, the exe folder (development layout) and **nested folders inside `assets\`** (ISO extracted by hand without flattening). Then it validates `default.xex`, `data\`, `data\localization\*.xml` and `data\swf\`; if anything is missing it shows the details in **`assets_error.txt`** (next to the exe) and in a console, and exits cleanly **before** creating the window/GPU. Escape hatch: cvar **`sh_skip_assets_check=true`**.
+- **Installer**: `install.bat` now verifies after extracting that `default.xex` + `data\` exist (warns instead of half-installing) and also looks for the ISO one level deeper.
+- **Note**: previously `assets\` was used as the root just by existing (in this repo it only contains a `README.md`), which broke the development layout.
 
-**#3 — rendimiento en combate (ROV en AMD/Intel).**
-- **No es un bug del port**: es el coste del **pixel shader de interlock** de la ruta ROV, que escala con píxeles y overdraw. En combate el perfil (`sh_render_profile`) da **~1350 draws/frame** (escena ~850 + profundidad/sombras ~475) con mucho solape. En NVIDIA (RTX 5060 Ti) se sostienen 60; las GPU **AMD (RX 9070 XT / 7800 XT) y Arc B580** lo reportan como slideshow. `render_target_path_d3d12="rtv"` es rápido pero **rompe la iluminación** (limitación de diseño de la ruta RTV), y **Vulkan** (FSI) es rápido pero hoy renderiza más oscuro y es inestable.
-- **Mitigación real hoy**: bajar la **resolución interna** (es la palanca que escala el coste de ROV) + FSR. El instalador detecta AMD/Intel y por defecto pone **1280x720** (antes 1080p); los presets del F5 van de 960x540 a 1920x1080. A 720p el ROV tiene **~2.2x menos píxeles** que a 1080p.
-- **Arreglo de fondo** (pendiente, upstream): especializar el shader ROV con los parámetros estáticos del RT (requiere ensanchar la clave del shader; ver `docs/rov-performance.md` §3/§3d).
+**#6 — ultrawide support.**
+- **Automatic** (cvar **`sh_aspect`**, default `auto`): on startup the **width** of the guest video mode is matched to the aspect of the **window/screen** (the height is kept), so the game renders 21:9/32:9 **natively** and the presenter doesn't add bars. Verified with a 2560x1080 window + `video_mode 1920x1080`: it's rewritten to 2560x1080 and the scene/UI fill the window (no bars or stretching). Log: `[sh-aspect] auto: internal mode 2560x1080 (was 1920x1080, screen 2.37:1)`.
+- Values: `auto`, `16:9`, `21:9`, `32:9` (`keep` = don't touch; set by the "Internal resolution" row when picking a mode by hand). **Internal aspect** row in F5.
+- **Added** (F5): internal resolutions **2560x1080 / 3440x1440** (guest video mode limit: 4095 px wide) and window sizes **2560x1080 / 2560x1440 / 3440x1440 / 3840x1080**.
+- **Presets no longer break the aspect**: they set the *vertical* resolution (540/720/900/1080) and compute the width from the current aspect, rounded to a multiple of 8.
+- If `sh_aspect=16:9` is forced with a 21:9 window, the presenter **pillarboxes** or stretches depending on **`present_letterbox`**.
 
-**#1 — inglés + DLC.**
-- El port es **inglés por defecto** (audio y texto) con localización de texto opcional (`sh_language`), y los **DLC se instalan solos** desde `Documents\splatterhouse\<title>\00000002` (ver `docs/dlc.md`).
-- **Añadido**: carpeta **`dlc\` junto al exe** (se crea al arrancar y se escanea) para que el usuario solo tenga que soltar ahí los paquetes STFS. El log indica siempre la ruta (`[sh-dlc] Sin paquetes DLC. Deja los paquetes ... en ...`).
+**F5: saving/loading settings (reported together with #6).**
+- **False "pending restart" flags**: `SetFlagFromSource` also marked as pending the values loaded from the **toml** (and the ones the port sets on startup), so the menu footer said "Restart to apply: video_mode_*" right after opening. Now `Source::kConfig` doesn't mark pending and the port clears the list at the end of `OnPostSetup`.
+- **Displayed preset**: the Preset row always said "Ultra". Now it's derived from the configuration (`DetectPresetIndex()`: height + texture cache).
+- **Saving erased the toml's comments** (toml++ doesn't keep them on rewrite): before rewriting, the previous file is copied to **`splatterhouse.toml.bak`**.
+- Verified with simulated real keys (WM_KEYDOWN + scancode): F5 → down to "Internal resolution" → right (1280x720 → 1600x900) → S → Esc; the toml ends up with `video_mode_width=1600`, `video_mode_height=900`, `sh_aspect='keep'` and the `.bak` with the previous file.
 
-### Resuelto: vibración del mando que no para
+**#3 — combat performance (ROV on AMD/Intel).**
+- **It's not a port bug**: it's the cost of the ROV path's **interlock pixel shader**, which scales with pixels and overdraw. In combat the profile (`sh_render_profile`) gives **~1350 draws/frame** (scene ~850 + depth/shadows ~475) with heavy overlap. On NVIDIA (RTX 5060 Ti) it holds 60; **AMD (RX 9070 XT / 7800 XT) and Arc B580** GPUs report it as a slideshow. `render_target_path_d3d12="rtv"` is fast but **breaks the lighting** (design limitation of the RTV path), and **Vulkan** (FSI) is fast but today renders darker and is unstable.
+- **Real mitigation today**: lower the **internal resolution** (it's the lever that scales the ROV cost) + FSR. The installer detects AMD/Intel and defaults to **1280x720** (previously 1080p); the F5 presets go from 960x540 to 1920x1080. At 720p ROV has **~2.2x fewer pixels** than at 1080p.
+- **Root fix** (pending, upstream): specialize the ROV shader with the static RT parameters (requires widening the shader key; see `docs/rov-performance.md` §3/§3d).
 
-- **Síntoma**: al matar a un enemigo (a veces al 2º o 3º, aleatorio) el mando se queda vibrando y **no para**.
-- **Cadena del guest** (para futuras sesiones): el objeto de vibración del juego tiene los **objetivos** en `[obj+84]`/`[obj+86]` y los **valores enviados** en `[obj+76]`/`[obj+78]`. `sub_82482990` (ranura de vtable, "aplicar") copia 84/86 → 76/78 y salta a `sub_829F0B08`, que llama a `XamInputSetState(user=0, 0, &vib)`. `sub_82482268` es el "stop": pone 84/86 a 0 y llama a la vtable. **No hay interpolación**: los únicos sitios que escriben 76/78 son `sub_82482990`.
-- **Causa en el runtime**: en PC la vibración **se mantiene hasta que se cambia**, y el driver **no tenía ninguna red de seguridad** para pararla. En el backend por defecto (`input_backend="sdl"`) `SDL_RumbleGamepad` se armaba con `kRumbleDurationMs = 0xFFFF` (~**65 s**, `SDL_MAX_RUMBLE_DURATION_MS`) y SDL **reenvía el efecto cada 2 s** (`SDL_RUMBLE_RESEND_MS`) mientras esté vivo (`SDL_joystick.c:2071` / `:2777`). Con eso, cualquier comando de "parar" que se pierda (una escritura rechazada, el mando reabierto, o simplemente que el juego no lo mande) deja el motor zumbando **casi un minuto**, ySDL lo refresca cada 2 s. Con el backend `xinput` es peor: `XInputSetState` no tiene expiración ni reenvío, así que un "parar" perdido = vibración **eterna**.
-- **Fix** (SDK, drivers de input): se recuerda la última vibración pedida por mando y su fecha. Si el juego deja de refrescarla más de **`sh_rumble_timeout_ms`** (10 s, `0` = off) los motores se fuerzan a 0 y se loguea `[sh-rumble]`. El watchdog corre en `GetDeviceState` (el guest sondea la entrada cada frame), y `OnControllerDeviceAddedLocked` para los motores al abrir un mando (uno que ya venía zumbando tras una desconexión). En XInput, lo mismo por slot desde `EnumerateDevices`. Se arma el watchdog **desde la petición**, no desde el resultado, para cubrir también las escrituras fallidas.
-- **Por qué 10 s**: un juego que empuja su envolvente de vibración por frame refresca esto cada ~16 ms; solo se dispara cuando la vibración está de verdad atascada. Si apareciera el log `[sh-rumble]` de forma constante, es que el juego **no** refresca y hay que subir el cvar.
-- Cvar **`sh_rumble_timeout_ms`** (solo backend SDL; el de XInput usa 10 s fijo).
+**#1 — English + DLC.**
+- The port is **English by default** (audio and text) with optional text localization (`sh_language`), and **DLC installs itself** from `Documents\splatterhouse\<title>\00000002` (see `docs/dlc.md`).
+- **Added**: a **`dlc\` folder next to the exe** (created on startup and scanned) so the user only has to drop the STFS packages there. The log always shows the path (`[sh-dlc] No DLC packages. Put the packages ... in ...`).
 
-### Herramienta dev: warp de nivel (`sh_warp`)
+### Solved: controller rumble that doesn't stop
 
-- Para **calentar la caché de shaders por capítulos** sin jugarlos: cvar **`sh_warp`** (nombre de nivel) → el runtime carga ese nivel. Fila **Warp nivel (dev)** en el menú F5 (cicla `lvl1_manor_interior`, `lvl2_shanty`, `lvl3_manor_catacombs`, `lvl4_carnival`, `lvl5_manor_grounds`, `lvl7_manor_chapel`, `survival_arena`, `frontend`).
-- Implementado en `VdSwap_entry` (SDK, `xboxkrnl_video.cpp`): lee `sh_warp`, obtiene el `GameState` global (`*(0x82FFA3AC)`) y llama a `GameState::RequestLoadLevelByLevelName` (`0x82795E48`, `r3=GameState`, `r4=nombre`) vía `FunctionDispatcher::Execute` (hilo guest; reintenta hasta que el `GameState` exista y limpia la cvar). **Específico de Splatterhouse.** Verificado: dispara sin crash.
-- Flujo: in-game/menú → **F5** → **Warp nivel** → elegir nivel → esperar a que cargue → repetir. Luego `tools\pack_shadercache.bat`.
+- **Symptom**: when killing an enemy (sometimes the 2nd or 3rd, random) the controller keeps vibrating and **doesn't stop**.
+- **Guest chain** (for future sessions): the game's rumble object has the **targets** at `[obj+84]`/`[obj+86]` and the **sent values** at `[obj+76]`/`[obj+78]`. `sub_82482990` (vtable slot, "apply") copies 84/86 → 76/78 and jumps to `sub_829F0B08`, which calls `XamInputSetState(user=0, 0, &vib)`. `sub_82482268` is the "stop": sets 84/86 to 0 and calls the vtable. **There is no interpolation**: the only places that write 76/78 are `sub_82482990`.
+- **Cause in the runtime**: on PC rumble **persists until changed**, and the driver **had no safety net** to stop it. In the default backend (`input_backend="sdl"`) `SDL_RumbleGamepad` was armed with `kRumbleDurationMs = 0xFFFF` (~**65 s**, `SDL_MAX_RUMBLE_DURATION_MS`) and SDL **resends the effect every 2 s** (`SDL_RUMBLE_RESEND_MS`) while it's alive (`SDL_joystick.c:2071` / `:2777`). With that, any lost "stop" command (a rejected write, the controller being reopened, or simply the game not sending it) leaves the motor buzzing for **almost a minute**, and SDL refreshes it every 2 s. With the `xinput` backend it's worse: `XInputSetState` has no expiry or resend, so a lost "stop" = **eternal** rumble.
+- **Fix** (SDK, input drivers): the last requested rumble per controller and its timestamp are remembered. If the game stops refreshing it for more than **`sh_rumble_timeout_ms`** (10 s, `0` = off) the motors are forced to 0 and `[sh-rumble]` is logged. The watchdog runs in `GetDeviceState` (the guest polls input every frame), and `OnControllerDeviceAddedLocked` stops the motors when a controller is opened (one that was already buzzing after a disconnect). In XInput, the same per slot from `EnumerateDevices`. The watchdog is armed **from the request**, not from the result, to also cover failed writes.
+- **Why 10 s**: a game that pushes its rumble envelope per frame refreshes this every ~16 ms; it only fires when the rumble is truly stuck. If the `[sh-rumble]` log appeared constantly, the game **doesn't** refresh and the cvar needs raising.
+- Cvar **`sh_rumble_timeout_ms`** (SDL backend only; the XInput one uses a fixed 10 s).
 
-### (histórico) Localización — primer intento, bloqueado
+### Dev tool: level warp (`sh_warp`)
 
-- El juego usa **Gamebryo**: el idioma sale de la clave **`LanguageDef`** de su config (`game/data/options.xml`, **XCompress**); **NO** usa `XGetLanguage`/`XamGetLocale` (verificado con logs).
-- El nombre del idioma lo devuelve **`sub_827B65E0(this)`** = `tabla[this+120]`, con la tabla en datos guest **`0x82F90110`** = `{English, French, Italian, German, Spanish, Japanese}` (punteros a nombre). `LocalizationManager::LoadLanguage` construye `%s\%s.xml` y cae a `english.xml` si no lo encuentra.
-- **Implementado** (`src/sh_language_hook.cpp`): override weak de `sub_827B65E0` que devuelve el idioma de la cvar **`sh_language`** (`auto` = locale del host vía `GetUserDefaultUILanguage`; `default` = comportamiento original). Añadida fila **Idioma** a la pantalla F5. También cvar **`user_language`** en el SDK para `XGetLanguage` (útil para juegos que sí lo usan).
-- **Bloqueo**: este copy solo trae bancos de audio **`English(US)`** (`D:\Data\sounds\soundbanks\XBox360\English(US)\`). Forzar otro idioma hace buscar bancos inexistentes → **crash** (wild pointer). El **texto** sí se localizaría (`data/localization/<lang>.xml` existen); falta el audio multiidioma (versión EU) o un fallback. Dejado `sh_language = "default"` (estable).
-- Pendiente: fallback de audio (usar English(US) si falta el idioma) para poder localizar solo el texto.
+- To **warm up the shader cache chapter by chapter** without playing them: cvar **`sh_warp`** (level name) → the runtime loads that level. **Level warp (dev)** row in the F5 menu (cycles `lvl1_manor_interior`, `lvl2_shanty`, `lvl3_manor_catacombs`, `lvl4_carnival`, `lvl5_manor_grounds`, `lvl7_manor_chapel`, `survival_arena`, `frontend`).
+- Implemented in `VdSwap_entry` (SDK, `xboxkrnl_video.cpp`): reads `sh_warp`, gets the global `GameState` (`*(0x82FFA3AC)`) and calls `GameState::RequestLoadLevelByLevelName` (`0x82795E48`, `r3=GameState`, `r4=name`) via `FunctionDispatcher::Execute` (guest thread; retries until the `GameState` exists and clears the cvar). **Splatterhouse-specific.** Verified: fires without crashing.
+- Flow: in-game/menu → **F5** → **Level warp** → pick a level → wait for it to load → repeat. Then `tools\pack_shadercache.bat`.
 
-### Resuelto: blocker Scaleform/XCTD (atlas `.dds`)
+### (historical) Localization — first attempt, blocked
 
-- El AV `sub_82823E28` (`generated/splatterhouse_recomp.86.cpp:18045`) era un **síntoma**: `[singleton+520]==0` porque el movie `subtitles.gfx` no cargaba. Cadena: `sub_828249C0` → `sub_828245F8` → vtable+44 = `sub_828419C8` → `sub_825ED970` → `sub_825F0AD0` → `sub_82604518` → `sub_82609F50` (loader Scaleform).
-- **Causa raíz**: assets `.gfx`/`.dds` comprimidos con **Xbox 360 XCompress** (firma `0F F5 12 ED`, `XMemDecompressSegmentTD`). El engine (`sub_829F5E70` → `sub_829F5668`) los descomprime de forma transparente, pero para ello consulta `NtQueryInformationFile(XFileXctdCompressionInformation)` (`sub_829F5600`, clase `27`); **sólo si la consulta falla** cae al path de detección por magic. El parche local 3 devolvía éxito+0 → el engine leía crudo → Scaleform no parseaba → `+520==0` → AV. Revertir el parche 3 (el SDK ya devuelve `INVALID_PARAMETER`, como Xenia) lo arregla.
-- **Verificado**: 0 access violations; se abre el atlas UI completo (**243+ `.dds`**: `savingicon.dds`, `bloodspiral01.dds`, `errorscreen_i*.dds`, …), `sh_menu_01.gfx`, `loadingscreen.gfx`; el juego renderiza y se mantiene >20 s.
-- Nota: `REX_TRACE`/`sh-io` siguen disponibles; el descompresor XCTD vive en el engine (`sub_829F2EB8`/`sub_829F4B58`, detección en `sub_829F5668`/`sub_829F5600`).
+- The game uses **Gamebryo**: the language comes from the **`LanguageDef`** key in its config (`game/data/options.xml`, **XCompress**); it does **NOT** use `XGetLanguage`/`XamGetLocale` (verified with logs).
+- The language name is returned by **`sub_827B65E0(this)`** = `table[this+120]`, with the table in guest data at **`0x82F90110`** = `{English, French, Italian, German, Spanish, Japanese}` (pointers to names). `LocalizationManager::LoadLanguage` builds `%s\%s.xml` and falls back to `english.xml` if it isn't found.
+- **Implemented** (`src/sh_language_hook.cpp`): weak override of `sub_827B65E0` that returns the language from the cvar **`sh_language`** (`auto` = host locale via `GetUserDefaultUILanguage`; `default` = original behavior). Added a **Language** row to the F5 screen. Also the SDK cvar **`user_language`** for `XGetLanguage` (useful for games that do use it).
+- **Blocker**: this copy only ships **`English(US)`** audio banks (`D:\Data\sounds\soundbanks\XBox360\English(US)\`). Forcing another language makes it look for nonexistent banks → **crash** (wild pointer). The **text** would be localized (`data/localization/<lang>.xml` exist); what's missing is multi-language audio (EU version) or a fallback. Left `sh_language = "default"` (stable).
+- Pending: audio fallback (use English(US) if the language is missing) so only the text can be localized.
 
-### Instrumentación (env vars)
+### Solved: Scaleform/XCTD blocker (`.dds` atlas)
 
-| var | efecto |
+- The AV `sub_82823E28` (`generated/splatterhouse_recomp.86.cpp:18045`) was a **symptom**: `[singleton+520]==0` because the `subtitles.gfx` movie didn't load. Chain: `sub_828249C0` → `sub_828245F8` → vtable+44 = `sub_828419C8` → `sub_825ED970` → `sub_825F0AD0` → `sub_82604518` → `sub_82609F50` (Scaleform loader).
+- **Root cause**: `.gfx`/`.dds` assets compressed with **Xbox 360 XCompress** (signature `0F F5 12 ED`, `XMemDecompressSegmentTD`). The engine (`sub_829F5E70` → `sub_829F5668`) decompresses them transparently, but to do so it queries `NtQueryInformationFile(XFileXctdCompressionInformation)` (`sub_829F5600`, class `27`); **only if the query fails** does it fall back to the magic-detection path. Local patch 3 returned success+0 → the engine read raw → Scaleform didn't parse → `+520==0` → AV. Reverting patch 3 (the SDK already returns `INVALID_PARAMETER`, like Xenia) fixes it.
+- **Verified**: 0 access violations; the full UI atlas opens (**243+ `.dds`**: `savingicon.dds`, `bloodspiral01.dds`, `errorscreen_i*.dds`, …), `sh_menu_01.gfx`, `loadingscreen.gfx`; the game renders and stays up >20 s.
+- Note: `REX_TRACE`/`sh-io` are still available; the XCTD decompressor lives in the engine (`sub_829F2EB8`/`sub_829F4B58`, detection in `sub_829F5668`/`sub_829F5600`).
+
+### Instrumentation (env vars)
+
+| var | effect |
 |---|---|
-| `REX_DEBUG_CS=40000618` | vigila ese CS (entero/leave + frames) |
-| `REX_DEBUG_CS_LEVEL=4` | umbral de recursión para volcar (default 4) |
-| `REX_TRACE_LO=82800000` `REX_TRACE_HI=82A00000` | traza (1 vez/función) las entradas de función en ese rango |
-| `[sh-av]` (siempre) | PC+RVA del access violation |
-| `[sh-swap]` (con `sh_log_fps`) | tasa real de `VdSwap/s` (present del guest) — instrumentado en `VdSwap_entry` |
-| `REX_SH_IO=1` | backtrace del llamador de opens `.gfx`/`.dds`; vuelca `guest_image.bin` (19.6 MB). **Opt-in**: era el `[sh-io]`, que escribía 22 líneas **por asset** a la consola sin buffer (stall de I/O en el streaming), así que ahora está apagado por defecto |
-| `REX_SH_GPU=1` | avisos `[sh-gpu]` de `vfetch` (stride 0 / mismatch). **Opt-in** por el mismo motivo |
-| `REX_SH_DLC=1` | `[sh-dlc]`: qué contenido enumera/abre el juego (`XamContentCreateEnumerator`/`XamContentCreate`). Opt-in |
-| `sh_render_profile=true` | `[sh-render]`: perfil de workload de render por intervalo (draws/frame, pares VS:PS por hash de ucode, tipo de primitiva, y "pases" por formato de RT + base/pitch/msaa/profundidad con proxy de píxeles por scissor). Ajustes: `sh_render_profile_interval_s` (2 s), `sh_render_profile_top` (8). En el command processor D3D12. Ver `docs/rov-performance.md` §3d |
+| `REX_DEBUG_CS=40000618` | watches that CS (enter/leave + frames) |
+| `REX_DEBUG_CS_LEVEL=4` | recursion threshold for dumping (default 4) |
+| `REX_TRACE_LO=82800000` `REX_TRACE_HI=82A00000` | traces (once per function) function entries in that range |
+| `[sh-av]` (always) | PC+RVA of the access violation |
+| `[sh-swap]` (with `sh_log_fps`) | real `VdSwap/s` rate (guest present) — instrumented in `VdSwap_entry` |
+| `REX_SH_IO=1` | caller backtrace for `.gfx`/`.dds` opens; dumps `guest_image.bin` (19.6 MB). **Opt-in**: it was `[sh-io]`, which wrote 22 lines **per asset** to the unbuffered console (I/O stall in streaming), so it's now off by default |
+| `REX_SH_GPU=1` | `[sh-gpu]` warnings for `vfetch` (stride 0 / mismatch). **Opt-in** for the same reason |
+| `REX_SH_DLC=1` | `[sh-dlc]`: which content the game enumerates/opens (`XamContentCreateEnumerator`/`XamContentCreate`). Opt-in |
+| `sh_render_profile=true` | `[sh-render]`: render workload profile per interval (draws/frame, VS:PS pairs by ucode hash, primitive type, and "passes" by RT format + base/pitch/msaa/depth with a pixel proxy from the scissor). Settings: `sh_render_profile_interval_s` (2 s), `sh_render_profile_top` (8). In the D3D12 command processor. See `docs/rov-performance.md` §3d |
 
-### Pendiente (prioridad: crashes > rendimiento > gráficos)
+### Pending (priority: crashes > performance > graphics)
 
-1. **Crashes restantes**: ya se entra en gameplay (se golpea a enemigos). El `Call to invalid or unregistered function` de turno se resuelve añadiendo el target a `[functions]` (el `[sh-uf]` da la dirección; `scan_missing4.py` enumera la familia `mtctr;bctr`). **Lección aprendida**: añadir los candidatos **en bloque no es seguro** — los thunks aislados que devuelve el detector estricto pueden partir funciones de init y colar un **AV determinista a los ~6 s** (probado: lote de 108 → AV en `sub_824C1558`; solo la **tabla contigua** `0x825CB108..0x825CB1B8` es segura). Regla: añadir de a pocos y verificar 3 corridas de 60 s sin AV.
-2. **Rendimiento**: mitigado (60 FPS con el parche `4E4D07F0` + FSR a 1080p). Para GPUs débiles: **presets** (Bajo/Medio/Alto/Ultra) de la pantalla F5. La optimización de fondo es abaratar la ruta **ROV**; análisis y plan en **`docs/rov-performance.md`** (el TODO del SDK es especializar el pixel shader con los parámetros de RT estáticos).
-   - **Diagnóstico de "parones" (medido, >2 min de gameplay real)**: es **GPU-bound**. CPU 1–5 % de 12 núcleos; **GPU 3D 60–89 %**. El guest presenta a ~60 `VdSwap/s` (`[sh-swap]`, log añadido a `VdSwap` en el SDK); los tirones son frames >16.6 ms que caen a **30** (mitad de vblank/limiter). Repartir entre núcleos **no ayuda** (no hay carga de CPU). Palancas: bajar `video_mode_*` (preset F5), `fullscreen=true`, o abaratar ROV.
-   - **Causa raíz del parón grande (RESUELTA): `PipelineCache::EndSubmission()`**. Aunque `async_shader_compilation=true` salta el draw, `EndSubmission` **creaba las pipelines encoladas en el hilo del present** (`CreateQueuedPipelinesOnProcessorThread`) y **esperaba a los hilos de fondo** (`Wait`) → stall de hasta **673 ms** en el hilo de UI durante el present (al entrar en zonas con materiales/PSO nuevos). **Fix**: cvar **`sh_pso_async`** (default **on`) → `EndSubmission` solo despierta a los hilos de fondo y **no espera**; los draws sin pipeline se saltan (popping). Verificado: `EndSubmission(swap)` 40.9→4.1 ms; frame máx 673→51 ms. Reversible con `sh_pso_async=false`.
-   - **Instrumentación de diagnóstico** (opt-in, cvar `sh_frame_log` + `sh_frame_log_ms`): scopes `[sh-frame]` en `IssueSwap`, `Begin/EndSubmission` (por fase: `pipeline_cache_EndSubmission`, `SubmitBarriers`, `allocator_Reset`, `Signal`, `deferred_execute`, `ExecuteCommandLists`), `CheckSubmissionFence/wait-GPU`, `IssueDraw`, `IssueCopy`, y en el presenter (`PaintAndPresentImpl`, `frame_limiter_wait`, `swapchain_Present`, `RefreshGuestOutputImpl`, `refresher-lambda`, host presents/s). **Ojo**: `host PaintAndPresent` mide ~33 ms pero **32.5 ms son la espera voluntaria del frame limiter** (no trabajo); el render real es <1 ms y el host presenta a **60/s**. No confundir con un stall.
-   - **Nota "camara rapida" (x2)**: con `vsync=false` el juego **no** se acelera (el guest sigue presentando a 60); lo que era x2 era el **parche 60 FPS aplicado sobre una base de 30**. Verificar `sh_60fps` si se vuelve a ver.
-   - La traducción de shaders y la creación de PSO **ya** van en hilos de fondo (`d3d12_pipeline_creation_threads` = núcleos×3/4) y la caché se precrea al arrancar (401→1072 PSOs en <0.3 s; **0** durante el juego). `async_shader_compilation=true` salta el draw hasta que la pipeline está lista (popping, no congelación).
-   - Se pasó la instrumentación pesada a **opt-in** (`REX_SH_IO`/`REX_SH_GPU`): el `[sh-io]` escribía un backtrace de 22 líneas a la consola **sin buffer** en cada open `.dds`/`.gfx` (stall en el path de streaming). Reconstruidos `rexruntimerd.dll` + `rexgpu-xenosrd.dll`.
-   - Si los tirones siguen: el frame que excede 16.6 ms hace que el **vsync baje a 30** (mitad de vblank). Palancas: bajar `video_mode_*` (preset), `vsync=false`+`d3d12_present_frame_limiter`, o abaratar ROV. Revisar por qué la carga/intro arranca a 30 antes de estabilizar a 60.
-3. **Bugs gráficos (iluminación) — RTV no es arreglable por config**: escena 3D casi negra, solo emisivos/lámparas y UI visibles (silueta) con **RTV**. Es la **limitación de diseño** de la ruta RTV (confirmado en la wiki de Xenia y el issue PGR4 #161): la eDRAM del X360 se reinterpreta en varios formatos y tiene formatos inexistentes en PC (7e3 HDR, fixed −32..32…); la ruta RT renderiza a texturas PC y **aproxima/copia**, y pierde el solape/reinterpretación de eDRAM que usan los pases de iluminación. **ROV renderiza directo a la eDRAM** (blending/depth en el shader) y lo reproduce bien.
-   - **Obligatorio** `render_target_path_d3d12 = "rov"` (por defecto en GPU no-Intel es `rtv` → escena negra).
-   - **Probado y NO arregla** (RTV + `readback_resolve="full"`, `direct_host_resolve=false`, `mrt_edram_used_range_clamp_to_min=false`, `gamma_render_target_as_unorm16=false` → sigue oscuro). Arreglarlo de verdad = reimplementar en la ruta RTV lo que hace ROV → proyecto grande de gráficos.
-   - Con **ROV + FSR** el gameplay ya sostiene **60 FPS** a 1080p, así que RTV no hace falta para el rendimiento.
-4. **Post-procesado/DoF-blur** excesivo al inicio: probablemente DoF low-res de UE3 + upscale 720p→ventana; mitigable con `resolution_scale = 2` (coste GPU).
-4. Revisar los 3 avisos de codegen `bdz ... branches outside function` (0x8235B878/0x8235B888) — heurísticos.
-5. Tooling Xenia: sigue en `C:\Users\josel\Downloads\xenia_canary_windows` (log verbose; `trace_functions`+`trace_dump_path`).
+1. **Remaining crashes**: gameplay is reachable now (enemies can be hit). Each `Call to invalid or unregistered function` is solved by adding the target to `[functions]` (`[sh-uf]` gives the address; `scan_missing4.py` enumerates the `mtctr;bctr` family). **Lesson learned**: adding candidates **in bulk is not safe** — the isolated thunks the strict detector returns can split init functions and introduce a **deterministic AV at ~6 s** (tested: batch of 108 → AV in `sub_824C1558`; only the **contiguous table** `0x825CB108..0x825CB1B8` is safe). Rule: add a few at a time and verify 3 runs of 60 s without AV.
+2. **Performance**: mitigated (60 FPS with the `4E4D07F0` patch + FSR at 1080p). For weak GPUs: the F5 screen **presets** (Low/Medium/High/Ultra). The root optimization is making the **ROV** path cheaper; analysis and plan in **`docs/rov-performance.md`** (the SDK TODO is to specialize the pixel shader with the static RT parameters).
+   - **Diagnosis of "hitches" (measured, >2 min of real gameplay)**: it's **GPU-bound**. CPU 1–5 % of 12 cores; **GPU 3D 60–89 %**. The guest presents at ~60 `VdSwap/s` (`[sh-swap]`, log added to `VdSwap` in the SDK); the stutters are frames >16.6 ms that drop to **30** (half vblank/limiter). Spreading across cores **doesn't help** (there's no CPU load). Levers: lower `video_mode_*` (F5 preset), `fullscreen=true`, or make ROV cheaper.
+   - **Root cause of the big hitch (SOLVED): `PipelineCache::EndSubmission()`**. Even though `async_shader_compilation=true` skips the draw, `EndSubmission` **created the queued pipelines on the present thread** (`CreateQueuedPipelinesOnProcessorThread`) and **waited for the background threads** (`Wait`) → stall of up to **673 ms** on the UI thread during the present (when entering areas with new materials/PSOs). **Fix**: cvar **`sh_pso_async`** (default **on**) → `EndSubmission` only wakes the background threads and **doesn't wait**; draws without a pipeline are skipped (popping). Verified: `EndSubmission(swap)` 40.9→4.1 ms; max frame 673→51 ms. Reversible with `sh_pso_async=false`.
+   - **Diagnostic instrumentation** (opt-in, cvar `sh_frame_log` + `sh_frame_log_ms`): `[sh-frame]` scopes in `IssueSwap`, `Begin/EndSubmission` (per phase: `pipeline_cache_EndSubmission`, `SubmitBarriers`, `allocator_Reset`, `Signal`, `deferred_execute`, `ExecuteCommandLists`), `CheckSubmissionFence/wait-GPU`, `IssueDraw`, `IssueCopy`, and in the presenter (`PaintAndPresentImpl`, `frame_limiter_wait`, `swapchain_Present`, `RefreshGuestOutputImpl`, `refresher-lambda`, host presents/s). **Note**: `host PaintAndPresent` measures ~33 ms but **32.5 ms of it is the frame limiter's voluntary wait** (not work); the real render is <1 ms and the host presents at **60/s**. Don't mistake it for a stall.
+   - **"Fast motion" (x2) note**: with `vsync=false` the game does **not** speed up (the guest still presents at 60); the x2 was the **60 FPS patch applied on a 30 base**. Check `sh_60fps` if it shows up again.
+   - Shader translation and PSO creation **already** run on background threads (`d3d12_pipeline_creation_threads` = cores×3/4) and the cache is pre-created on startup (401→1072 PSOs in <0.3 s; **0** during gameplay). `async_shader_compilation=true` skips the draw until the pipeline is ready (popping, not freezing).
+   - Heavy instrumentation was moved to **opt-in** (`REX_SH_IO`/`REX_SH_GPU`): `[sh-io]` wrote a 22-line backtrace to the **unbuffered** console on every `.dds`/`.gfx` open (stall in the streaming path). Rebuilt `rexruntimerd.dll` + `rexgpu-xenosrd.dll`.
+   - If the stutters persist: a frame that exceeds 16.6 ms makes **vsync drop to 30** (half vblank). Levers: lower `video_mode_*` (preset), `vsync=false`+`d3d12_present_frame_limiter`, or make ROV cheaper. Look into why loading/intro starts at 30 before settling at 60.
+3. **Graphics bugs (lighting) — RTV can't be fixed by config**: 3D scene almost black, only emissives/lamps and UI visible (silhouette) with **RTV**. It's the **design limitation** of the RTV path (confirmed in the Xenia wiki and PGR4 issue #161): the X360 eDRAM is reinterpreted in several formats and has formats that don't exist on PC (7e3 HDR, fixed −32..32…); the RT path renders to PC textures and **approximates/copies**, losing the eDRAM overlap/reinterpretation the lighting passes use. **ROV renders directly to the eDRAM** (blending/depth in the shader) and reproduces it correctly.
+   - **Required** `render_target_path_d3d12 = "rov"` (on non-Intel GPUs the default is `rtv` → black scene).
+   - **Tried and does NOT fix it** (RTV + `readback_resolve="full"`, `direct_host_resolve=false`, `mrt_edram_used_range_clamp_to_min=false`, `gamma_render_target_as_unorm16=false` → still dark). Really fixing it = reimplementing in the RTV path what ROV does → a large graphics project.
+   - With **ROV + FSR** gameplay already holds **60 FPS** at 1080p, so RTV isn't needed for performance.
+4. Excessive **post-processing/DoF blur** at the start: probably UE3 low-res DoF + 720p→window upscale; mitigable with `resolution_scale = 2` (GPU cost).
+5. Review the 3 codegen warnings `bdz ... branches outside function` (0x8235B878/0x8235B888) — heuristic.
+6. Xenia tooling: still in `C:\Users\josel\Downloads\xenia_canary_windows` (verbose log; `trace_functions`+`trace_dump_path`).
 
-## Auditoría estática útil
+## Useful static audits
 
-- Fichero: `C:\Users\josel\AppData\Local\Temp\opencode\scan_rbw.py` — lee-antes-de-escribir de registros locales sobre `generated/*.cpp` (filtra spills de LR y helpers `__save*`/`__rest*`).
-- Fichero: `C:\Users\josel\AppData\Local\Temp\opencode\find_addr.py` — localiza referencias `lis/addi` a una dirección guest.
-- Nota: los miles de avisos `r30/r31` son **spill muerto** del prólogo; los 15 "sin terminador" son **inofensivos** (return implícito del host).
+- File: `C:\Users\josel\AppData\Local\Temp\opencode\scan_rbw.py` — read-before-write of local registers over `generated/*.cpp` (filters LR spills and `__save*`/`__rest*` helpers).
+- File: `C:\Users\josel\AppData\Local\Temp\opencode\find_addr.py` — locates `lis/addi` references to a guest address.
+- Note: the thousands of `r30/r31` warnings are **dead spills** from the prologue; the 15 "without terminator" are **harmless** (implicit host return).
 
-## Convenciones
+## Conventions
 
-- NO añadir comentarios al código salvo que se pida.
-- No commitear nunca sin instrucción explícita. No commitear assets ni secretos (`game/` está gitignored).
-- El runtime propio antiguo vive en `legacy/` (solo referencia, no compila con el stack nuevo).
+- Do NOT add comments to the code unless asked.
+- Never commit without explicit instruction. Never commit assets or secrets (`game/` is gitignored).
+- The old custom runtime lives in `legacy/` (reference only, doesn't build with the new stack).
+- User-facing text (F5 menu, installer, logs) and documentation are in **English**.

@@ -1,9 +1,9 @@
 @echo off
-rem Empaqueta la cache de shaders del SDK (generada al jugar) en "shadercache\"
-rem del release, para distribuirla con install.bat.
-rem Uso: juega una vez (recorre niveles/menus/cinematicas) y luego ejecuta este script.
+rem Packages the SDK shader cache (generated while playing) into the release's
+rem "shadercache\", to distribute it with install.bat.
+rem Usage: play once (go through levels/menus/cutscenes) and then run this script.
 setlocal enableextensions
-title Splatterhouse Recompiled - Empaquetar cache de shaders
+title Splatterhouse Recompiled - Package shader cache
 
 set "ROOT=%~dp0.."
 for /f "usebackq delims=" %%D in (`powershell -NoProfile -Command "[Environment]::GetFolderPath('MyDocuments')"`) do set "DOCS=%%D"
@@ -11,30 +11,30 @@ set "SRC=%DOCS%\splatterhouse\cache\shaders\shareable"
 set "DST=%ROOT%\shadercache"
 
 echo ===============================================
-echo   Empaquetar cache de shaders
+echo   Package shader cache
 echo ===============================================
 echo.
-echo   Origen : %SRC%
-echo   Destino: %DST%
+echo   Source : %SRC%
+echo   Target : %DST%
 echo.
 
 if not exist "%SRC%" goto no_src
 if not exist "%DST%" mkdir "%DST%"
 
-echo Copiando...
+echo Copying...
 xcopy /Y /I "%SRC%\*" "%DST%" >nul
 if errorlevel 1 goto failed
 
 echo.
-echo Listo. La carpeta "shadercache" ya se puede distribuir en el release.
+echo Done. The "shadercache" folder can now be shipped in the release.
 goto done
 
 :no_src
-echo No existe la cache de shaders. Juega una vez antes de empaquetar.
+echo The shader cache does not exist. Play once before packaging.
 goto done
 
 :failed
-echo Error copiando la cache.
+echo Error copying the cache.
 
 :done
 echo.

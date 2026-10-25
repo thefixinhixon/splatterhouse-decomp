@@ -1,37 +1,37 @@
 # GPU — Xenos -> Host
 
-Xbox 360 GPU: Xenos (ATI), D3D9-like con command buffer ring + shaders microcode.
+Xbox 360 GPU: Xenos (ATI), D3D9-like with a ring command buffer + microcode shaders.
 
-## Ahora con ReXGlue (v0.2.0)
+## Now with ReXGlue (v0.2.0)
 
-El SDK ya incluye un sistema gráfico Xenos completo (`rexgpu-xenos` plugin: command processor, shader translator DXBC/SPIR-V, texture/render target caches, backends D3D12 y Vulkan). Se activa con `rexglue_setup_target(splatterhouse GPU_PLUGINS xenos)` — con eso **no hace falta** HLE de D3D9 propio. El backend D3D12 stub que escribimos quedó en `legacy/src/gpu/`.
+The SDK already includes a complete Xenos graphics system (`rexgpu-xenos` plugin: command processor, DXBC/SPIR-V shader translator, texture/render target caches, D3D12 and Vulkan backends). It is enabled with `rexglue_setup_target(splatterhouse GPU_PLUGINS xenos)` — with that, a custom D3D9 HLE is **not needed**. The stub D3D12 backend we wrote was left in `legacy/src/gpu/`.
 
-## Estrategia de fallback (HLE D3D9)
+## Fallback strategy (D3D9 HLE)
 
-Splatterhouse (UE3) usa `d3d9.dll` del XDK. Si el plugin Xenos no da a luz, aún queda la opción de:
+Splatterhouse (UE3) uses the XDK's `d3d9.dll`. If the Xenos plugin doesn't pan out, there is still the option of:
 
-- Interceptar `D3D9Create`, `CreateDevice`, `DrawIndexedPrimitive`, `SetTexture`, `SetVertexShader`, etc.
-- Re-emitir a D3D12/Vulkan con wrapper (similar a `D3D9On12` o `dxvk`).
+- Intercepting `D3D9Create`, `CreateDevice`, `DrawIndexedPrimitive`, `SetTexture`, `SetVertexShader`, etc.
+- Re-emitting to D3D12/Vulkan with a wrapper (similar to `D3D9On12` or `dxvk`).
 
-## Estrategia para este port
+## Strategy for this port
 
-Splatterhouse (UE3) usa `d3d9.dll` del XDK. Eso es buena noticia: no hay que emular todo el Xenos, basta con HLEar D3D9:
+Splatterhouse (UE3) uses the XDK's `d3d9.dll`. That's good news: there's no need to emulate all of Xenos, HLE-ing D3D9 is enough:
 
-- Interceptar `D3D9Create`, `CreateDevice`, `DrawIndexedPrimitive`, `SetTexture`, `SetVertexShader`, etc.
-- Re-emitir a D3D12/Vulkan con wrapper (similar a `D3D9On12` o `dxvk`).
+- Intercept `D3D9Create`, `CreateDevice`, `DrawIndexedPrimitive`, `SetTexture`, `SetVertexShader`, etc.
+- Re-emit to D3D12/Vulkan with a wrapper (similar to `D3D9On12` or `dxvk`).
 
-Alternativa si se quiere fidelidad: usar el command processor de Xenia (`xenia/gpu/`).
+Alternative if fidelity is wanted: use Xenia's command processor (`xenia/gpu/`).
 
-## Roadmap GPU
+## GPU roadmap
 
-1. **Bootstrap**: ventana SDL3 vacía (hecho).
-2. **D3D9 HLE stubs**: loggear calls y retornar dummy device.
-3. **D3D12 backend**: crear device/swapchain (`src/gpu/d3d12_backend.cpp`).
-4. **Shader translator**: microcode Xenos -> DXIL/SPIR-V (ver `XenonUtils`/`xenia` shader translator).
+1. **Bootstrap**: empty SDL3 window (done).
+2. **D3D9 HLE stubs**: log calls and return a dummy device.
+3. **D3D12 backend**: create device/swapchain (`src/gpu/d3d12_backend.cpp`).
+4. **Shader translator**: Xenos microcode -> DXIL/SPIR-V (see the `XenonUtils`/`xenia` shader translator).
 5. **Texture/format swizzle**: Xenos tiling -> linear.
 
-## Referencias
+## References
 
-- Xenia `xenia/gpu/xenos/` y `xenia/ui/d3d12/`
-- hedge-dev `XenonUtils` GPU helpers (si existen)
-- RenderDoc para capturar frames del juego en Xenia y comparar.
+- Xenia `xenia/gpu/xenos/` and `xenia/ui/d3d12/`
+- hedge-dev `XenonUtils` GPU helpers (if they exist)
+- RenderDoc to capture game frames in Xenia and compare.

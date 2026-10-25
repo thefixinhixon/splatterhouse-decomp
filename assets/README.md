@@ -1,1 +1,1 @@
-Carpeta para assets del launcher si los necesitas (iconos, etc.). No pongas assets del juego aquí.
+Folder for launcher assets if you need them (icons, etc.). Do not put game assets here.

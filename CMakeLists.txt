@@ -24,6 +24,8 @@ set(SPLATTERHOUSE_SOURCES
     src/sh_language_hook.cpp
     src/sh_unlock_hook.cpp
     src/sh_uf_diag.cpp
+    src/sh_stream_diag.cpp
+    src/sh_xctd_cache_fix.cpp
 )
 
 if(WIN32)
@@ -32,8 +34,32 @@ else()
     add_executable(splatterhouse ${SPLATTERHOUSE_SOURCES})
 endif()
 
-# GPU_PLUGINS xenos: compila y copia el plugin grafico Xenos (D3D12/Vulkan)
+# GPU_PLUGINS xenos: builds and copies the Xenos graphics plugin (D3D12/Vulkan)
 rexglue_setup_target(splatterhouse GPU_PLUGINS xenos)
 
-# El host compila rex_app.cpp del SDK, que incluye imgui.h directamente.
+# On Linux the SDK only stages the GPU plugin when the executable relinks and
+# never stages the runtime libraries, so an SDK-only change would leave stale
+# copies next to the executable. Stage them on every build.
+if(UNIX AND NOT APPLE)
+    set(_splatterhouse_staged_libs)
+    foreach(_lib rexruntime rexgpu-xenos TracyClient)
+        if(TARGET ${_lib})
+            list(APPEND _splatterhouse_staged_libs $<TARGET_FILE:${_lib}>)
+        endif()
+    endforeach()
+    add_custom_target(splatterhouse_stage_libs
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_splatterhouse_staged_libs}
+            $<TARGET_FILE_DIR:splatterhouse>
+        VERBATIM)
+    add_dependencies(splatterhouse_stage_libs rexruntime rexgpu-xenos)
+    add_dependencies(splatterhouse splatterhouse_stage_libs)
+endif()
+
+# generate_exception_handlers emits SEH_TRY/SEH_CATCH, but the SDK's generated
+# precompiled header doesn't include the header that defines them.
+if(TARGET splatterhouse_recomp)
+    target_precompile_headers(splatterhouse_recomp PRIVATE <rex/platform/exceptions.h>)
+endif()
+
+# The host compiles the SDK's rex_app.cpp, which includes imgui.h directly.
 target_include_directories(splatterhouse PRIVATE extern/rexglue-sdk/thirdparty/imgui)

@@ -1,54 +1,54 @@
-# Recompilación — Splatterhouse Xbox 360
+# Recompilation — Splatterhouse Xbox 360
 
-## Flujo ReXGlue
+## ReXGlue flow
 
 ```
-default.xex (encriptado XEX2)
+default.xex (encrypted XEX2)
    |  xextool -r -c
    v
-default.dec.xex (IMAGE PPC desencriptado)
+default.dec.xex (decrypted PPC IMAGE)
    |  rexglue codegen splatterhouse_manifest.toml
    v
-generated/*.cpp + _init.h/.cpp (funciones PPC como C++ con PPCContext)
-   |  + Runtime del SDK (rex::Runtime, KernelState, FunctionDispatcher)
+generated/*.cpp + _init.h/.cpp (PPC functions as C++ with PPCContext)
+   |  + SDK runtime (rex::Runtime, KernelState, FunctionDispatcher)
    v
-splatterhouse.exe (x64 nativo, Clang)
+splatterhouse.exe (native x64, Clang)
 ```
 
-## Tipos de código
+## Kinds of code
 
-- **Recompilado puro**: lógica del juego (update, AI, física). Va a `generated/` (autogenerado, no editar).
-- **Overrides/HLE**: llamadas al kernel se reimplementan como `REX_EXPORT`/`REX_HOOK` (ver wiki Function Overrides). El SDK ya trae shims de xboxkrnl/xam; añade los que falten en `src/`.
-- **Mid-ASM hooks**: parcheo fino por instrucción vía `[[midasm_hook]]` en `config/codegen.toml`.
+- **Pure recompiled**: game logic (update, AI, physics). Goes to `generated/` (auto-generated, do not edit).
+- **Overrides/HLE**: kernel calls are reimplemented as `REX_EXPORT`/`REX_HOOK` (see the Function Overrides wiki page). The SDK already ships xboxkrnl/xam shims; add any missing ones in `src/`.
+- **Mid-ASM hooks**: fine-grained per-instruction patching via `[[midasm_hook]]` in `config/codegen.toml`.
 
-## Cómo averiguar qué implementar primero
+## How to figure out what to implement first
 
-1. `rexglue codegen splatterhouse_manifest.toml --force` y compila. La primera vez habrá `UnresolvedCall`: lista `config/codegen.toml` con `[functions]`.
-2. Ejecuta y mira los primeros logs del runtime (activa `--log_level trace` / cvar `log_level`).
-3. Implementa los imports que falten con `REX_EXPORT` o stubs `REX_EXPORT_STUB`.
-4. Repite.
+1. `rexglue codegen splatterhouse_manifest.toml --force` and build. The first time there will be `UnresolvedCall`s: list them in `config/codegen.toml` under `[functions]`.
+2. Run it and look at the first runtime logs (enable `--log_level trace` / cvar `log_level`).
+3. Implement the missing imports with `REX_EXPORT` or `REX_EXPORT_STUB` stubs.
+4. Repeat.
 
-Herramientas útiles:
-- `xenia` (referencia de implementación; ReXGlue deriva de su runtime)
-- IDA/Ghidra con PPC plugin para ver strings y xrefs de `MaxSmoothedFrameRate`, `ResX`, etc.
-- `python tools/recompile.py --dry-run` para validar rutas sin binario.
+Useful tools:
+- `xenia` (reference implementation; ReXGlue derives from its runtime)
+- IDA/Ghidra with a PPC plugin to see strings and xrefs for `MaxSmoothedFrameRate`, `ResX`, etc.
+- `python tools/recompile.py --dry-run` to validate paths without the binary.
 
-## UE3 particularidades (Splatterhouse)
+## UE3 specifics (Splatterhouse)
 
-Splatterhouse 2010 usa Unreal Engine 3 (~2009). Pistas:
-- Binario contiene strings `Unreal`, `GWorld`, `GEngine`, `GFx`, `Bink`
-- Configs en `Coalesced.ini` / `*.ini` dentro de `game/CookedXenon/`
-- Para unlock FPS busca `bSmoothFrameRate`, `Min/MaxSmoothedFrameRate` en memoria o .ini.
-- Scaleform GFx para HUD/menus -> puede necesitar HLE de `GFx` o simplemente dejar que el recompilado lo llame (es parte del juego, no import OS).
+Splatterhouse 2010 uses Unreal Engine 3 (~2009). Hints:
+- The binary contains the strings `Unreal`, `GWorld`, `GEngine`, `GFx`, `Bink`
+- Configs in `Coalesced.ini` / `*.ini` inside `game/CookedXenon/`
+- To unlock FPS look for `bSmoothFrameRate`, `Min/MaxSmoothedFrameRate` in memory or .ini.
+- Scaleform GFx for HUD/menus -> may need a `GFx` HLE or simply let the recompiled code call it (it's part of the game, not an OS import).
 
 ## Patches
 
-Ver `config/patches.toml.example`. Dos tipos:
-- **Bin patch en recompilación**: XenonRecomp puede noppear branches.
-- **Runtime patch**: Parchear memoria guest tras `mem::Initialize()` (ej. escribir `60 00 00 00` en addr).
+See `config/patches.toml.example`. Two kinds:
+- **Bin patch at recompilation**: XenonRecomp can NOP out branches.
+- **Runtime patch**: patch guest memory after `mem::Initialize()` (e.g. write `60 00 00 00` at an addr).
 
 ## Debugging
 
 - `config.toml` -> `logLevel=0` + `devMode=true`
-- En MSVC: `F5` con preset `windows-debug` deja consola abierta con logs.
-- Para trace PPC: habilitar `XenonUtils` trace (si se integra).
+- In MSVC: `F5` with the `windows-debug` preset keeps a console open with logs.
+- For PPC tracing: enable `XenonUtils` trace (if integrated).

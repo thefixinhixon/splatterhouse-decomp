@@ -1,92 +1,94 @@
-# DLC en el port (Survival Arenas, máscaras, etc.)
+# DLC in the port (Survival Arenas, masks, etc.)
 
-Splatterhouse (2010) tuvo contenido descargable (DLC). El port lo soporta: si el
-usuario tiene los paquetes, se pueden jugar. Esta guía explica cómo funciona y
-cómo colocarlos.
+Splatterhouse (2010) had downloadable content (DLC). The port supports it: if
+the user has the packages, they can be played. This guide explains how it works
+and where to put them.
 
-## Qué DLC hay
+## What DLC exists
 
 - **Survival Arena Pack**: 4 arenas (`island_arena`, `heartboss_arena`,
-  `mirror_rick_arena`, `white_tile_arena`) — el `info.xml` las declara con
+  `mirror_rick_arena`, `white_tile_arena`) — the `info.xml` declares them with
   `<Flag name="Is DLC" val="1"/>`.
-- **Máscaras / armas / trajes** extra (contenido cosmético y de gameplay).
-- Nota: el **disco base ya incluye** las 6 Survival Arenas originales y las
-  emulaciones *Classic Splatterhouse 1/2/3*; el DLC añade arenas y objetos
-  adicionales.
+- Extra **masks / weapons / outfits** (cosmetic and gameplay content).
+- Note: the **base disc already includes** the 6 original Survival Arenas and
+  the *Classic Splatterhouse 1/2/3* emulations; the DLC adds extra arenas and
+  items.
 
-## Cómo funciona (cadena completa)
+## How it works (full chain)
 
-1. En Xbox 360 el DLC era un **paquete STFS** (firma `CON `/`LIVE`/`PIRS`) que la
-   consola montaba como `XContent`. Su `info.xml` declara niveles
+1. On Xbox 360 DLC was an **STFS package** (signature `CON `/`LIVE`/`PIRS`) that
+   the console mounted as `XContent`. Its `info.xml` declares levels
    (`DownloadPackage` → `<Level ...><Path val="levels/...">`).
-2. El engine (`DownloadManager` / `DownloadManagerXenon` →
-   `LevelDatabase::AddDLCLevel`) enumeraba el contenido (`XEnumerate`), abría el
-   paquete, leía `info.xml` y **añadía los niveles DLC al `leveldb`**.
-3. El runtime de ReXGlue **ya implementa** `XamContent*` (`ContentManager`:
-   enumerar, crear, abrir/montar, licencias) y monta el paquete como device VFS
-   con su symlink (`XContent:…`). Al abrirlo, el engine lee el `info.xml` del
-   paquete montado y añade los niveles.
+2. The engine (`DownloadManager` / `DownloadManagerXenon` →
+   `LevelDatabase::AddDLCLevel`) enumerated the content (`XEnumerate`), opened
+   the package, read `info.xml` and **added the DLC levels to the `leveldb`**.
+3. The ReXGlue runtime **already implements** `XamContent*` (`ContentManager`:
+   enumerate, create, open/mount, licenses) and mounts the package as a VFS
+   device with its symlink (`XContent:…`). On open, the engine reads the mounted
+   package's `info.xml` and adds the levels.
 
-Lo único que faltaba: **instalar** los paquetes STFS en la carpeta de contenido
-del usuario. El port lo hace automáticamente al arrancar.
+The only missing piece was **installing** the STFS packages into the user's
+content folder. The port does this automatically on startup.
 
-## Instalación automática (implementado)
+## Automatic installation (implemented)
 
-En `SplatterhouseApp::InstallDlcPackages()` (llamado desde
-`OnPostLoadXexImage`, cuando ya se conoce el title ID) el port:
+In `SplatterhouseApp::InstallDlcPackages()` (called from
+`OnPostLoadXexImage`, once the title ID is known) the port:
 
-1. Busca paquetes STFS en:
-   - **`<carpeta del exe>\dlc\`** (la más cómoda: se crea sola al arrancar y el
-     log indica siempre la ruta)
+1. Looks for STFS packages in:
+   - **`<exe folder>\dlc\`** (the most convenient: it is created on startup and
+     the log always shows the path)
    - `%USERPROFILE%\Documents\splatterhouse\<title>\00000002\`
    - `%USERPROFILE%\Documents\splatterhouse\0000000000000000\<title>\00000002\`
-   - **cualquier subcarpeta de primer nivel** (p. ej. el xuid del perfil
+   - **any first-level subfolder** (e.g. the profile xuid
      `B13EBABEBABEBABE`) `\<title>\00000002\`
-   
-   donde `<title>` es `4E4D07F0`.
-2. Para cada paquete, `ContentManager::InstallContentFromDirectory` lo detecta
-   por su magic (`CON `/`LIVE`/`PIRS`) y lo instala con `InstallContent`:
-   - lo monta con `StfsContainerDevice` y **extrae** su contenido a
+
+   where `<title>` is `4E4D07F0`.
+2. `SplatterhouseApp::InstallStfsPackagesFrom` detects each package by its magic
+   (`CON `/`LIVE`/`PIRS`) and installs it with the SDK's public
+   `ContentManager::InstallContent`:
+   - mounts it with `StfsContainerDevice` and **extracts** its contents to
      `root_path_/0000000000000000/<title>/00000002/<filename>/`
-   - escribe la **cabecera** `.header` para la enumeración XAM
+   - writes the `.header` file for XAM enumeration
      (`…/<title>/Headers/00000002/<filename>.header`)
-   - usa la **license mask** de las licencias del paquete STFS
-3. Es idempotente: si el paquete ya está extraído, se salta.
+   - uses the **license mask** from the STFS package's licenses
+3. It is idempotent: if `ContentManager::ContentExists` says the package is
+   already installed, it is skipped (`InstallContent` itself always re-extracts).
 
-Tras esto, el engine hace `XamContentCreateEnumerator(type=0x00000002)` → ve los
-paquetes, los abre y añade sus niveles/máscaras al menú.
+After this, the engine calls `XamContentCreateEnumerator(type=0x00000002)` → sees
+the packages, opens them and adds their levels/masks to the menu.
 
-## Cómo colocarlo (usuario)
+## Where to put it (user)
 
-1. Consigue los paquetes DLC (formato STFS: ficheros que empiezan por
-   `CON `/`LIVE`/`PIRS`, normalmente sin extensión o `.xcp`).
-2. Cópialos a, por ejemplo:
+1. Get the DLC packages (STFS format: files starting with
+   `CON `/`LIVE`/`PIRS`, usually without an extension or `.xcp`).
+2. Copy them to, for example:
    ```
    %USERPROFILE%\Documents\splatterhouse\4E4D07F0\00000002\
    ```
-   (también vale bajo cualquier `<xuid>\4E4D07F0\00000002\`).
-3. Arranca el port. En el log verás:
+   (any `<xuid>\4E4D07F0\00000002\` also works, as does `dlc\` next to the exe).
+3. Start the port. The log will show:
    ```
    Installed DLC package <hash>
-   [sh-dlc] Instalados N paquete(s) DLC desde la carpeta de usuario
+   [sh-dlc] Installed N DLC package(s)
    ```
-4. En el menú aparecerán las arenas/objetos DLC.
+4. The DLC arenas/items will appear in the menu.
 
-## Diagnóstico
+## Diagnostics
 
-- **`REX_SH_DLC=1`** (variable de entorno): loguea en detalle qué contenido
-  enumera/abre el juego (`[sh-dlc] XamContentCreateEnumerator type=…`,
-  `XamContentCreate type=… file=…`) y el `ListContent`. Útil si un DLC no
-  aparece.
-- El log de instalación (`Installed DLC package …`) va a nivel `info`; con
-  `log_level = "warn"` no se muestra, pero la instalación ocurre igual.
+- **`REX_SH_DLC=1`** (environment variable): logs in detail which content the
+  game enumerates/opens (`[sh-dlc] XamContentCreateEnumerator type=…`,
+  `XamContentCreate type=… file=…`) and the `ListContent`. Useful if a DLC
+  doesn't show up.
+- The installation log (`Installed DLC package …`) is at `info` level; with
+  `log_level = "warn"` it isn't shown, but the installation still happens.
 
-## Limitaciones / notas
+## Limitations / notes
 
-- El DLC cosmético (máscaras/trajes) usa `DLCBodyPart` y el sistema de
-  condiciones del save; en el port se desbloquea con el sistema de condiciones
-  (las arenas DLC se ven en el selector; las máscaras, al elegir capítulo).
-- `XamContentOpenFile` sigue siendo un stub en el SDK; no ha hecho falta porque
-  el engine lee los ficheros del paquete por el VFS montado, no por esa API.
-- Licencias: el port copia la license mask del propio paquete STFS, así que el
-  contenido descargado legítimamente se reconoce sin parchear nada.
+- Cosmetic DLC (masks/outfits) uses `DLCBodyPart` and the save's condition
+  system; in the port it is unlocked through the condition system (DLC arenas
+  show up in the selector; masks, when choosing a chapter).
+- `XamContentOpenFile` is still a stub in the SDK; it hasn't been needed because
+  the engine reads the package files through the mounted VFS, not that API.
+- Licenses: the port copies the license mask from the STFS package itself, so
+  legitimately downloaded content is recognized without patching anything.

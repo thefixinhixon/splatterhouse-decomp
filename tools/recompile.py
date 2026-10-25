@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-Codegen para Splatterhouse (Xbox 360) con el CLI de ReXGlue.
+Codegen for Splatterhouse (Xbox 360) with the ReXGlue CLI.
 
-Uso:
-  python tools/recompile.py                                 # codegen con el manifest
-  python tools/recompile.py --xex game/default.dec.xex      # valida que exista el XEX
-  python tools/recompile.py --force                         # ignora errores de validacion
-  python tools/recompile.py --cli C:\\ruta\\a\\rexglue.exe  # binario manual
+Usage:
+  python tools/recompile.py                                 # codegen with the manifest
+  python tools/recompile.py --xex game/default.dec.xex      # checks that the XEX exists
+  python tools/recompile.py --force                         # ignores validation errors
+  python tools/recompile.py --cli C:\\path\\to\\rexglue.exe  # manual binary
 
-El CLI de ReXGlue se busca en este orden:
+The ReXGlue CLI is searched in this order:
   1. --cli / %REXGLUE_BIN%
-  2. rexglue en PATH
-  3. Build local del SDK: build/rexglue-sdk/bin/recxglue(.exe), SDK instalado con `--target install`
+  2. rexglue on PATH
+  3. Local SDK build: build/rexglue-sdk/bin/rexglue(.exe), SDK installed with `--target install`
 
-Documentacion: https://github.com/rexglue/rexglue-sdk/wiki
+Documentation: https://github.com/rexglue/rexglue-sdk/wiki
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def find_rexglue(cli: str | None) -> Path | None:
     if cli:
         p = Path(cli)
         if not p.is_file():
-            sys.exit(f"[error] CLI no encontrado: {p}")
+            sys.exit(f"[error] CLI not found: {p}")
         return p
     env = shutil.os.environ.get("REXGLUE_BIN")
     if env and Path(env).is_file():
@@ -51,35 +51,35 @@ def find_rexglue(cli: str | None) -> Path | None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Codegen de Splatterhouse con ReXGlue")
+    ap = argparse.ArgumentParser(description="Splatterhouse codegen with ReXGlue")
     ap.add_argument("--xex", type=Path, default=(ROOT / "game" / "default.dec.xex"),
-                    help="XEX desencriptado (validacion; el manifest apunta a game/default.dec.xex)")
-    ap.add_argument("--cli", type=str, help="Ruta al binario rexglue")
+                    help="Decrypted XEX (validation; the manifest points to game/default.dec.xex)")
+    ap.add_argument("--cli", type=str, help="Path to the rexglue binary")
     ap.add_argument("--force", action="store_true",
-                    help="Genera salida aunque haya errores de validacion (UnresolvedCall etc.)")
-    ap.add_argument("--dry-run", action="store_true", help="Solo valida config y XEX")
+                    help="Generate output even if there are validation errors (UnresolvedCall etc.)")
+    ap.add_argument("--dry-run", action="store_true", help="Only validate config and XEX")
     args = ap.parse_args()
 
     if not MANIFEST.exists():
-        sys.exit(f"[error] No existe {MANIFEST}")
+        sys.exit(f"[error] {MANIFEST} does not exist")
     if not args.xex.exists():
-        print(f"[error] XEX no encontrado: {args.xex}", file=sys.stderr)
-        print("  Extrae el ISO con exiso/xiso y desencripta:", file=sys.stderr)
+        print(f"[error] XEX not found: {args.xex}", file=sys.stderr)
+        print("  Extract the ISO with exiso/xiso and decrypt:", file=sys.stderr)
         print("  xextool -r -c default.xex -> game/default.dec.xex", file=sys.stderr)
         return 1
-    print(f"[recompile].Manifest: {MANIFEST}")
+    print(f"[recompile] Manifest: {MANIFEST}")
     print(f"[recompile] XEX:      {args.xex}")
 
     if args.dry_run:
-        print("[recompile] Modo --dry-run: no se ejecuta codegen.")
+        print("[recompile] --dry-run mode: codegen is not run.")
         return 0
 
     rexglue = find_rexglue(args.cli)
     if not rexglue:
-        print("[error] CLI de ReXGlue no encontrado.", file=sys.stderr)
-        print("  1. Descarga el release: https://github.com/rexglue/rexglue-sdk/releases", file=sys.stderr)
-        print("  2. O compila el SDK y: cmake --build out/build/win-amd64 --target install", file=sys.stderr)
-        print("  3. Tambien puedes definir REXGLUE_BIN o usar --cli", file=sys.stderr)
+        print("[error] ReXGlue CLI not found.", file=sys.stderr)
+        print("  1. Download the release: https://github.com/rexglue/rexglue-sdk/releases", file=sys.stderr)
+        print("  2. Or build the SDK and run: cmake --build out/build/win-amd64 --target install", file=sys.stderr)
+        print("  3. You can also set REXGLUE_BIN or use --cli", file=sys.stderr)
         return 1
     print(f"[recompile] rexglue:   {rexglue}")
 
@@ -89,10 +89,10 @@ def main() -> int:
     print(f"[recompile] {' '.join(cmd)} ")
     result = subprocess.run(cmd, cwd=ROOT)
     if result.returncode != 0:
-        print("[error] codegen fallo ( Usa --force para generar igualmente y "
-              "resolver los errores incrementalmente", file=sys.stderr)
+        print("[error] codegen failed (use --force to generate anyway and "
+              "resolve the errors incrementally)", file=sys.stderr)
         return result.returncode
-    print("[recompile] Generado en generated/. Compilar: cmake --build out/build/win-amd64 -j")
+    print("[recompile] Generated in generated/. Build: cmake --build out/build/win-amd64 -j")
     return 0
 
 

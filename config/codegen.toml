@@ -1,17 +1,17 @@
-# Splatterhouse (2010) - Xbox 360 - Config de codegen para ReXGlue
-# Referencia: https://github.com/rexglue/rexglue-sdk/wiki/rexglue-CLI-Configuration-File
+# Splatterhouse (2010) - Xbox 360 - ReXGlue codegen config
+# Reference: https://github.com/rexglue/rexglue-sdk/wiki/rexglue-CLI-Configuration-File
 #
-# Migrado desde config/recomp.toml (XenonRecomp). Las claves de flags son
-# equivalentes 1:1 en ReXGlue.
+# Migrated from config/recomp.toml (XenonRecomp). The flag keys are
+# 1:1 equivalents in ReXGlue.
 #
-# Uso (vía manifest): rexglue codegen splatterhouse_manifest.toml
+# Usage (via manifest): rexglue codegen splatterhouse_manifest.toml
 
 # ============================================================
-# Optimizaciones de codegen (port desde XenonRecomp recomp.toml)
-# Activas para evitar el problema de save/restore functions mal
-# recompiladas (fusionadas por fall-through). Con
-# non_volatile_as_local, r14-r31 se convierten en variables
-# locales y el codegen elimina las llamadas a __savegprlr/__restgprlr.
+# Codegen optimizations (ported from XenonRecomp recomp.toml)
+# Enabled to avoid the problem of miscompiled save/restore
+# functions (merged by fall-through). With
+# non_volatile_as_local, r14-r31 become local variables
+# and the codegen removes the calls to __savegprlr/__restgprlr.
 # ============================================================
 skip_lr = true
 skip_msr = true
@@ -19,17 +19,17 @@ ctr_as_local = true
 xer_as_local = true
 reserved_as_local = true
 cr_as_local = true
-non_argument_as_local = true
+non_argument_as_local = false
 non_volatile_as_local = true
 
-# SEH: UE3 usa __try/__except (proteccion de memoria scrubble etc.).
-# Sin esto, las excepciones del guest llegan como access violation del host.
+# SEH: UE3 uses __try/__except (scrubble memory protection etc.).
+# Without this, guest exceptions arrive as host access violations.
 generate_exception_handlers = true
 
 # ============================================================
-# Nota de migracion (XenonRecomp -> ReXGlue)
-# XenonRecomp usaba claves explícitas para las funciones de
-# save/restore de registros detectadas con tools/find_restores.py:
+# Migration note (XenonRecomp -> ReXGlue)
+# XenonRecomp used explicit keys for the register save/restore
+# functions detected with tools/find_restores.py:
 #   restgprlr_14_address  = 0x829B0610
 #   savegprlr_14_address  = 0x829B05C0
 #   restfpr_14_address    = 0x829B13BC
@@ -38,20 +38,20 @@ generate_exception_handlers = true
 #   savevmx_14_address    = 0x829B1D40
 #   restvmx_64_address    = 0x829B206C
 #   savevmx_64_address    = 0x829B1DD4
-# ReXGlue no tiene esas claves: el analisis detecta las funciones
+# ReXGlue doesn't have those keys: the analysis detects the
 # __savegprlr/__restgprlr/__savefpr/__restfpr/__savevmx/__restvmx
-# automaticamente. No es necesario configurar nada aqui.
+# functions automatically. Nothing needs to be configured here.
 #
-# setjmp/longjmp (descomentar si el juego los usa):
+# setjmp/longjmp (uncomment if the game uses them):
 #   setjmp_address  = 0x82000000
 #   longjmp_address = 0x82000100
 # ============================================================
 
 # ============================================================
-# Overrides manuales (rellenar durante el analisis con IDA/x64dbg)
+# Manual overrides (fill in during analysis with IDA/x64dbg)
 # ============================================================
 
-# Funciones explicitas (bordes que el analisis no detecta bien):
+# Explicit functions (boundaries the analysis doesn't detect correctly):
 [functions]
 0x824BEF00 = { }
 0x82B78A00 = { }
@@ -85,52 +85,52 @@ generate_exception_handlers = true
 0x82F2D810 = { }
 0x82F2D5E8 = { }
 0x82F2D580 = { }
-# UnresolvedCall detectada: tail call 'b 0x8257AA90' desde 0x824AD120.
-# Borde auto-detectado desde esa direccion; ajusta size si el analisis falla.
+# UnresolvedCall detected: tail call 'b 0x8257AA90' from 0x824AD120.
+# Boundary auto-detected from that address; adjust size if the analysis fails.
 0x8257AA90 = {}
-# boton runtime: 'Call to invalid or unregistered function at 0x82F2D000'.
-# Indirect call / vtable a una funcion que el Discover no detecto entre
-# sub_82F2CFE8 y sub_82F2D028.
+# runtime crash: 'Call to invalid or unregistered function at 0x82F2D000'.
+# Indirect call / vtable to a function Discover didn't detect between
+# sub_82F2CFE8 and sub_82F2D028.
 0x82F2D000 = {}
-# mismo patron: llamada indirecta a 0x82F2D0F8
+# same pattern: indirect call to 0x82F2D0F8
 0x82F2D0F8 = {}
 0x82F2D440 = {}
-# boton runtime (fix CS r12): 'Call to invalid or unregistered function at
-# 0x822D4110'. Funcion alcanzada solo por llamada indirecta, en el hueco entre
-# sub_822D4090 y sub_822D4124.
+# runtime crash (CS r12 fix): 'Call to invalid or unregistered function at
+# 0x822D4110'. Function reached only by indirect call, in the gap between
+# sub_822D4090 and sub_822D4124.
 0x822D4110 = {}
-# FATAL tras XamShowDeviceSelectorUI: 'Call to invalid or unregistered function
-# at 0x827D8838'. Thunk 'b 0x827D7B10' (8 bytes, con padding) entre
-# sub_827D8790 y sub_827D8840; referenciado por una tabla de callbacks que el
-# dataPointerScan no alcanzo.
+# FATAL after XamShowDeviceSelectorUI: 'Call to invalid or unregistered function
+# at 0x827D8838'. Thunk 'b 0x827D7B10' (8 bytes, with padding) between
+# sub_827D8790 and sub_827D8840; referenced by a callback table that
+# dataPointerScan didn't reach.
 0x827D8838 = {}
 
-# Jump tables no detectadas:
+# Undetected jump tables:
 # [[switch_tables]]
 # address = 0x82000100
 # register = 11
 # labels = [0x82000200, 0x82000300]
 
-# Datos embebidos que se confunden con codigo:
+# Embedded data mistaken for code:
 # [[invalid_instructions]]
 # data = 0x00000000
 # size = 4
 
-# Hooks a funciones C++ nativas en instructiones concretas:
+# Hooks to native C++ functions at specific instructions:
 # [[midasm_hook]]
 # address = 0x82001234
 # name = "MyHook"
 # registers = ["r3", "r4"]
 
-# Reemplazo de CRT del guest por implementaciones host:
+# Replace the guest CRT with host implementations:
 # [rexcrt]
 # RtlAllocateHeap = "0x82000154"
 # RtlFreeHeap = "0x82000254"
 
-# [scan_missing] Thunks de despacho/reentrada (lwz;lwz;mtctr;bctr o `b tgt; 00000000`)
-# precedidos de terminador, dentro de funciones ya emitidas pero sin entrada propia:
-# el analisis fusiono funciones contiguas y estas entradas quedaban inalcanzables
-# (FATAL `Call to invalid or unregistered function`). Detectados con scan_missing3.py.
+# [scan_missing] Dispatch/re-entry thunks (lwz;lwz;mtctr;bctr or `b tgt; 00000000`)
+# preceded by a terminator, inside already-emitted functions but without their own entry:
+# the analysis merged contiguous functions and these entries were unreachable
+# (FATAL `Call to invalid or unregistered function`). Detected with scan_missing3.py.
 0x82221F28 = {}
 0x82241488 = {}
 0x822D5784 = {}
@@ -195,17 +195,18 @@ generate_exception_handlers = true
 0x82EE3AF0 = {}
 
 
-# Thunk de despacho virtual (lwz;mr;lwz;lwz;mtctr;bctr) alcanzado por tabla
-# de callbacks del UI (FATAL tras cargar journal.gfx/minigameprompts.gfx).
+# Virtual dispatch thunk (lwz;mr;lwz;lwz;mtctr;bctr) reached through a UI
+# callback table (FATAL after loading journal.gfx/minigameprompts.gfx).
 0x825CB158 = {}
 
 
 
-# Tabla contigua de thunks de despacho virtual (0x825CB108..0x825CB1B8), del
-# callback UI. El analisis la fusiono; el runtime los llama por tabla.
+# Contiguous table of virtual dispatch thunks (0x825CB108..0x825CB1B8), from
+# the UI callback. The analysis merged it; the runtime calls them by table.
 0x825CB108 = {}
 0x825CB130 = {}
 0x825CB170 = {}
 0x825CB188 = {}
 0x825CB1A0 = {}
 0x825CB1B8 = {}
+0x8263DC78 = {}

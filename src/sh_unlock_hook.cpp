@@ -1,16 +1,16 @@
-// Splatterhouse (2010) - desbloqueo de niveles (historia).
+// Splatterhouse (2010) - level unlock (story).
 //
-// El frontend (Scaleform) decide que capitulos estan desbloqueados consultando
-// la funcion ActionScript GetHighestLevelCompleted, que se resuelve en
-// sub_82E5C540(this, name) devolviendo [statsObj+392] como string. Ahi acaba el
-// selector de capitulos del menu principal.
+// The frontend (Scaleform) decides which chapters are unlocked by querying the
+// ActionScript function GetHighestLevelCompleted, which resolves to
+// sub_82E5C540(this, name) returning [statsObj+392] as a string. That is where
+// the main menu chapter select ends up.
 //
-// Reemplazamos sub_82E5C540 (weak override) para que, si la cvar
-// sh_unlock_levels esta activa, devuelva el nivel maximo en lugar del guardado.
-// Tambien reemplazamos sub_82EF0FE0 (GetHighestReachedLevel), que algunos menus
-// usan como fuente alternativa de "nivel alcanzado".
+// We replace sub_82E5C540 (weak override) so that, if the sh_unlock_levels cvar
+// is on, it returns the maximum level instead of the saved one. We also replace
+// sub_82EF0FE0 (GetHighestReachedLevel), which some menus use as an alternative
+// source of "level reached".
 //
-// sh_unlock_debug=true loguea (one-shot) las consultas para diagnostico.
+// sh_unlock_debug=true logs (one-shot) the queries for diagnostics.
 
 #include <algorithm>
 #include <cstdio>
@@ -60,7 +60,7 @@ std::string GuestCString(uint32_t addr) {
   return p ? std::string(p) : std::string();
 }
 
-// Buffer guest estable para devolver el nivel como string.
+// Stable guest buffer for returning the level as a string.
 uint32_t GuestLevelString(uint32_t value) {
   static uint32_t address = 0;
   static uint32_t cached = 0xFFFFFFFFu;
@@ -84,7 +84,7 @@ uint32_t GuestLevelString(uint32_t value) {
 
 }  // namespace
 
-// GetHighestReachedLevel: maximo nivel alcanzado (fuente alternativa).
+// GetHighestReachedLevel: highest level reached (alternative source).
 REX_HOOK_RAW(sub_82EF0FE0) {
   __imp__sub_82EF0FE0(ctx, base);
   if (!REXCVAR_GET(sh_unlock_levels)) {
@@ -98,7 +98,7 @@ REX_HOOK_RAW(sub_82EF0FE0) {
   }
 }
 
-// GetStat(name): el selector de capitulos pregunta "GetHighestLevelCompleted".
+// GetStat(name): the chapter select asks for "GetHighestLevelCompleted".
 REX_HOOK_RAW(sub_82E5C540) {
   const std::string name = GuestCString(ctx.r4.u32);
   __imp__sub_82E5C540(ctx, base);

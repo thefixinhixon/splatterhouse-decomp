@@ -1,14 +1,14 @@
-// Splatterhouse (2010) - parche de 60 FPS (equivalente a la patch de Xenia
-// "60 FPS" del titulo 4E4D07F0, autor illusion).
+// Splatterhouse (2010) - 60 FPS patch (equivalent to the Xenia "60 FPS" patch
+// for title 4E4D07F0, author illusion).
 //
-// La patch de Xenia escribe tres sitios: dos floats (0x82F8FF58/5C: 1/15 y 1/30
-// -> 1/60, aplicados en SplatterhouseApp::ApplyGuestMemoryPatches) y una
-// instruccion en 0x8247A4AC (stb r30,202(r31) -> stb r11,202(r31)).
+// The Xenia patch writes three places: two floats (0x82F8FF58/5C: 1/15 and 1/30
+// -> 1/60, applied in SplatterhouseApp::ApplyGuestMemoryPatches) and one
+// instruction at 0x8247A4AC (stb r30,202(r31) -> stb r11,202(r31)).
 //
-// Las funciones recompiladas se emiten como simbolos weak (DEFINE_REX_FUNC), de
-// modo que este fichero sustituye sub_8247A368 por una version fuerte que llama
-// al original (__imp__sub_8247A368) y luego replica el comportamiento parcheado
-// del campo +202. Asi el parche sobrevive a una regeneracion de `generated/`.
+// Recompiled functions are emitted as weak symbols (DEFINE_REX_FUNC), so this
+// file replaces sub_8247A368 with a strong version that calls the original
+// (__imp__sub_8247A368) and then replicates the patched behavior of field +202.
+// That way the patch survives a regeneration of `generated/`.
 
 #include <rex/hook.h>
 #include <rex/ppc.h>

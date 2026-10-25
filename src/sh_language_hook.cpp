@@ -1,14 +1,14 @@
-// Splatterhouse (2010) - localizacion del TEXTO (audio siempre English).
+// Splatterhouse (2010) - TEXT localization (audio always English).
 //
-// El juego (Gamebryo) obtiene el nombre del idioma con sub_827B65E0(this) =
-// tabla[this+120], y con el construye "data/localization/%s.xml". Esa funcion
-// se llama desde DOS sitios:
-//   - sub_82E786E8 (arranque temprano; el audio/setup): si se le devuelve un
-//     idioma no-ingles, el juego crashea (strlen sobre puntero malo).
-//   - sub_8277CFC8 (LocalizationManager::LoadLanguage): es el que queremos.
-// Asi que solo cambiamos el idioma cuando la llamada viene de la localizacion,
-// dejando el arranque/audio en el idioma original (English). El nombre se
-// devuelve en minusculas porque los ficheros son "spanish.xml" etc.
+// The game (Gamebryo) gets the language name with sub_827B65E0(this) =
+// table[this+120], and uses it to build "data/localization/%s.xml". That
+// function is called from TWO places:
+//   - sub_82E786E8 (early startup; audio/setup): if it gets a non-English
+//     language, the game crashes (strlen on a bad pointer).
+//   - sub_8277CFC8 (LocalizationManager::LoadLanguage): the one we want.
+// So we only change the language when the call comes from localization,
+// leaving startup/audio in the original language (English). The name is
+// returned in lowercase because the files are "spanish.xml" etc.
 
 #include <cstring>
 #include <string>
@@ -22,7 +22,7 @@
 #include <rex/ppc.h>
 #include <rex/rex_app.h>
 
-// Funciones recompiladas (para comparar el return address del host).
+// Recompiled functions (to compare against the host return address).
 REX_HOOK_RAW(sub_8277CFC8);
 REX_HOOK_RAW(sub_82E786E8);
 
@@ -71,8 +71,8 @@ int ResolveLanguageIndex() {
   return HostLanguageIndex();
 }
 
-// True si el return address del host cae dentro de sub_8277CFC8 (localizacion)
-// y no de sub_82E786E8 (arranque/audio).
+// True if the host return address falls inside sub_8277CFC8 (localization)
+// rather than sub_82E786E8 (startup/audio).
 bool CalledFromLocalization(void* return_address) {
   const uintptr_t ra = reinterpret_cast<uintptr_t>(return_address);
   const uintptr_t localization = reinterpret_cast<uintptr_t>(&sub_8277CFC8);
@@ -83,7 +83,7 @@ bool CalledFromLocalization(void* return_address) {
   return d_localization < d_startup;
 }
 
-// Nombre del idioma en minusculas, en un buffer guest asignado una sola vez.
+// Lowercase language name, in a guest buffer allocated only once.
 uint32_t GuestLowercaseName(int index) {
   static uint32_t address = 0;
   static int cached_index = -1;
