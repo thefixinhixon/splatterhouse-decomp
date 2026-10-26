@@ -10,9 +10,12 @@
 // (__imp__sub_8247A368) and then replicates the patched behavior of field +202.
 // That way the patch survives a regeneration of `generated/`.
 
+#include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/ppc.h>
 #include <rex/rex_app.h>
+
+REXCVAR_DECLARE(bool, sh_60fps);
 
 REX_HOOK_RAW(__imp__sub_8247A368);
 
@@ -20,6 +23,9 @@ REX_HOOK_RAW(sub_8247A368) {
   const uint32_t object = ctx.r3.u32;
   const uint8_t arg_byte = uint8_t(ctx.r7.u32);
   __imp__sub_8247A368(ctx, base);
+  if (!REXCVAR_GET(sh_60fps)) {
+    return;
+  }
   if (auto* memory = rex::Runtime::instance()->memory()) {
     memory->TranslateVirtual(object + 202)[0] = arg_byte;
   }

@@ -27,6 +27,12 @@ REXCVAR_DEFINE_BOOL(dump_guest, false, "Debug",
 REXCVAR_DEFINE_BOOL(sh_60fps, true, "Graphics",
     "Apply the Xenia 60 FPS data patch (Splatterhouse 4E4D07F0)");
 
+// With the 60 FPS patch the game advances a fixed 1/60 per frame, so frames
+// below 60 FPS play in slow motion. This feeds the real frame time (in whole
+// vblanks, 1/60..1/15) instead (src/sh_frame_time_hook.cpp).
+REXCVAR_DEFINE_BOOL(sh_60fps_realtime, true, "Graphics",
+    "With the 60 FPS patch, advance game time by the real frame time instead of a fixed 1/60");
+
 // Test: open the graphics screen on startup (for screenshots).
 REXCVAR_DEFINE_BOOL(sh_graphics_menu, false, "Graphics",
     "Open the graphics menu on startup (testing)");
