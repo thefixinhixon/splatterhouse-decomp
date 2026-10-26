@@ -133,6 +133,13 @@ class SplatterhouseApp : public rex::ReXApp {
     } else if (!rex::cvar::HasNonDefaultValue("render_target_path_d3d12")) {
       rex::cvar::SetFlagByName("render_target_path_d3d12", "rov");
     }
+    // The SDK default (true) drops every CPU-uploaded page at the end of each
+    // frame, so all vertex/index data is uploaded again every frame and each
+    // upload ends the render pass (combat fell to ~20 FPS). Xenia defaults it to
+    // false; guest writes are still caught by the page watches.
+    if (!rex::cvar::HasNonDefaultValue("clear_memory_page_state")) {
+      rex::cvar::SetFlagByName("clear_memory_page_state", "false");
+    }
     return defaults;
   }
 
