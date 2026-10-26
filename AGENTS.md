@@ -9,7 +9,7 @@ The Windows notes further down describe the original author's setup. This sectio
 ### Status (2026-10-25)
 
 - Builds and boots: intro, title, menus, story mode, cutscenes and first combat render with correct colours on Vulkan (`fsi` path, AMD RADV tested).
-- **Intermittent freeze while loading a level (W1): fixed** on branch `agent-w1/stale-block` (not merged yet), see W1.
+- **Intermittent freeze while loading a level (W1): fixed** and merged into `linux-port` (2026-10-25), see W1.
 - Performance: the user reports slow runs and once "a ton of graphical glitches" (W4, W5). Pinning the game to one core avoids W1 but performance is unacceptable, so that is not a fix.
 - All work so far is committed on the `linux-port` branches (main repo and `extern/rexglue-sdk`), not pushed. See "Multi-agent setup".
 
@@ -58,16 +58,18 @@ DISPLAY_NUM=91 tools/linux/headless_run.sh menu 60 30:Return 40:Return 50:space
 
 Claim a task by putting your agent name and date in **Owner** before starting, and keep **Notes** current. One owner per task. Tasks marked *codegen* regenerate `generated/`; only one agent may do that at a time (see Multi-agent setup).
 
+**Current split (2026-10-25), two agents:** Agent A "perf" owns W4 → C3 (`../sh-w4`, `DISPLAY_NUM=94`). Agent B "stability" owns C2 → W5 → W6 (`../sh-agent-b`, `DISPLAY_NUM=92`). Each agent runs one headless game at a time (two in total), edits only its own board rows, and plans no codegen changes (announce one here first if needed). Agent branches are committed locally; the user merges them into `linux-port`.
+
 | ID | Task | Owner | Notes |
 |---|---|---|---|
-| W1 | **Level-load stale-block race** (blocker) | agent-w1 (2026-10-25) | **Fixed on branch `agent-w1/stale-block`** (not merged): stale XCTD completion signal makes `GetOverlappedResult` return while the read is pending; fix in `src/sh_overlapped_fix.cpp`. C1 passed 2026-10-25: 0/10 default, 0/10 `--ignore_thread_affinities=false` (was 3/3 crashing on the same branch without the fix). See W1 below. |
-| W2 | Interim mitigation for W1 without the single-core cost | | Obsolete if the W1 fix is merged. Idea: find the guest threads in the NIF streaming path (I/O thread runs `sub_8290DB88`, reader runs `sub_82991488`/`sub_82991388`) and pin only those to one host core via `XThread::SetActiveCpu`/`set_affinity_mask`, leaving render/GPU threads free. Must not regress fps. Exit: C1 with fps within 10% of unpinned. |
+| W1 | **Level-load stale-block race** (blocker) | agent-w1 (2026-10-25) | **Done**, merged into `linux-port` 2026-10-25 (with SDK `8b0d606`): stale XCTD completion signal makes `GetOverlappedResult` return while the read is pending; fix in `src/sh_overlapped_fix.cpp`. C1 passed 2026-10-25: 0/10 default, 0/10 `--ignore_thread_affinities=false` (was 3/3 crashing on the same branch without the fix). The merge also drops `src/sh_stream_diag.cpp` from the build. See W1 below. |
+| W2 | Interim mitigation for W1 without the single-core cost | | **Closed** 2026-10-25: superseded by the W1 fix. |
 | W3 | Rumble watchdog check on a real pad | user | `sh_rumble_timeout_ms` (SDL driver). Needs the user's controller; agents can't test it (rule 2). Expect `[sh-rumble]` in the log if a rumble gets stuck. |
-| W4 | Linux performance measurement | | No fps counter on Vulkan yet (`sh_log_fps` is D3D12-only). Add a vblank/VdSwap rate log to the Vulkan path, measure headless at 720p/1080p, then profile (perf) a gameplay scene. |
-| W5 | "Ton of graphical glitches" (1 user run) | | Unreproduced. Capture PNGs every few seconds through a full load+gameplay run and compare against Xenia; check `vulkan_async_skip_incomplete_frames` and pipeline-compile pop-in first. |
-| W6 | Remaining missing private SDK patches | | See the Linux checkout note under "Local SDK patches": 11 (`[sh-uf]` continue mode) would speed up crash hunting; 24/16 are D3D12-only. |
+| W4 | Linux performance measurement + first fixes | Agent A "perf" (2026-10-25) | Branch `agent-w4/perf` (worktree `../sh-w4`), `DISPLAY_NUM=94`. `[sh-perf]` log on SDK `b3c9fe7` (that branch only; more SDK changes uncommitted in the worktree). Plan: commit the in-flight SDK work, measure baseline fps headless (720p/1080p, first combat arena, `sh_warp`), `perf record` hotspots (separate the Xvfb/sw-WSI copy cost), first fixes with an fps re-measure + C0 each. Exit: C3; merge into `linux-port` after C0 + C1. Owns `extern/rexglue-sdk/src/{graphics,ui,core/perf}/**`. |
+| W5 | "Ton of graphical glitches" (1 user run) | Agent B "stability" (2026-10-25) | Worktree `../sh-agent-b`, branch `agent-b/soak` from `linux-port`, `DISPLAY_NUM=92`. Order: **C2 soak** first (15-min story run + every level via `--sh_warp`, PNG every ~5 s), then W5 from that PNG series (check `vulkan_async_skip_incomplete_frames` and pipeline-compile pop-in first; compare with Xenia captures from the user). Diagnose before editing `src/graphics/vulkan/**`: Agent A also edits `vulkan/command_processor.cpp`, so coordinate or rebase onto A's SDK branch. |
+| W6 | Remaining missing private SDK patches | Agent B "stability" (2026-10-25) | After C2/W5. Port 11 (`[sh-uf]` continue mode, `src/system/function_dispatcher.cpp`, runtime only, no codegen); 24/16 are D3D12-only, skip. Merge after C0. |
 | W7 | Commit/branch plan | user | Done 2026-10-25: `linux-port` branches, local only. Pushing is the user's call. |
-| W8 | Port the level warp (`sh_warp`) | agent-w8 2026-10-25 | **Done** on branch `agent-w8/warp` (not merged): `src/sh_warp_hook.cpp` overrides the guest present function `sub_822551A0` and writes the level index into `[*(0x831F6ED4)+152]`, which is what the frontend does when a chapter is picked. `--sh_warp=lvl2_shanty` / `lvl4_carnival` verified headless (the game's own loader logs `LoadLevel index=2 'lvl2_act1_shanty'` / `index=6 'lvl4_act1_carnival'`, screenshots show the Shanty and the Carnival, 0 AV). C0 still passes. Mechanics and gotchas in "Dev tool: level warp". |
+| W8 | Port the level warp (`sh_warp`) | agent-w8 2026-10-25 | **Done**, merged into `linux-port` (`95c51de`): `src/sh_warp_hook.cpp` overrides the guest present function `sub_822551A0` and writes the level index into `[*(0x831F6ED4)+152]`, which is what the frontend does when a chapter is picked. `--sh_warp=lvl2_shanty` / `lvl4_carnival` verified headless (the game's own loader logs `LoadLevel index=2 'lvl2_act1_shanty'` / `index=6 'lvl4_act1_carnival'`, screenshots show the Shanty and the Carnival, 0 AV). C0 still passes. Mechanics and gotchas in "Dev tool: level warp". |
 
 ### W1: level-load stale-block race (root cause found and fixed, 2026-10-25, agent-w1)
 
