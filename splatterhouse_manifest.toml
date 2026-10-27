@@ -8,8 +8,9 @@ sdk_version = "0.10.0"
 game_root = "game"
 
 [entrypoint]
-# Decrypted XEX (xextool -r -c default.xex -> default.dec.xex). Do not commit.
-file_path = "game/default.dec.xex"
+# Retail XEX straight from the ISO; the loader decrypts it (same generated code as a
+# default.dec.xex from xextool). Do not commit.
+file_path = "game/default.xex"
 out_directory_path = "generated"
 # Analysis/codegen configuration and overrides (flags, functions, rexcrt, hooks)
 includes = ["config/codegen.toml"]

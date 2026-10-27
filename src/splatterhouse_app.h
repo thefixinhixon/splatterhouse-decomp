@@ -396,7 +396,11 @@ class SplatterhouseApp : public rex::ReXApp {
         "The game data could not be found.\n\n"
         "Folder checked:\n{}\n\n"
         "Problem: {}\n\n"
+#if defined(_WIN32)
         "Drag the ISO onto install.bat, or put the ISO contents\n"
+#else
+        "Extract the ISO (extract-xiso -x) and put its contents\n"
+#endif
         "(default.xex and the data folder) in:\n{}\n\n"
         "You can also set the path in splatterhouse.toml\n"
         "(game_data_root = \"...\") or with --game_data_root.\n",
@@ -429,8 +433,12 @@ class SplatterhouseApp : public rex::ReXApp {
 #endif
     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error,
                               "The Splatterhouse game data could not be found. "
-                              "Run install.bat with the ISO, or put default.xex "
-                              "and the data folder in assets. Details in "
+#if defined(_WIN32)
+                              "Run install.bat with the ISO, or put the ISO contents (default.xex "
+#else
+                              "Put the ISO contents (default.xex "
+#endif
+                              "and the data folder) in assets. Details in "
                               "assets_error.txt, next to the executable.");
     std::_Exit(1);
   }

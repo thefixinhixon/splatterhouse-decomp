@@ -1,467 +1,391 @@
-# Splatterhouse Recompiled — native Xbox 360 → PC port
+# Splatterhouse Recompiled for Linux
 
-Native PC port of **Splatterhouse (2010)** (Xbox 360 version, title id `4E4D07F0`), built by
-**static recompilation** with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). The game
-code is translated to native C++ and compiled for your PC: **it is not an emulator**, there is no
-runtime interpretation, and it runs at native speed (60 FPS).
+Native **Linux** build of **Splatterhouse (2010)** for Xbox 360 (title id `4E4D07F0`). It is made by
+**static recompilation** with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk): the game's
+PowerPC code is translated to C++ and compiled for x86-64. It is **not an emulator**: no code is
+interpreted at runtime. Graphics run on **Vulkan**.
 
-> **It does not contain any game code or assets.** You need your own copy of the game (disc/ISO).
-> Inspired by *Sonic Unleashed Recompiled*, *Ninja Gaiden 2 Black Recompiled* and
-> *Silent Hill: Downpour Recompiled*.
-
-**Status: playable end-to-end** — menus, full campaign, DLC, 60 FPS, localized text and ultrawide.
-
-> **This is a fork** of [0c0de/splatterhouse-decomp](https://github.com/0c0de/splatterhouse-decomp)
-> that adds a **native Linux build (Vulkan)** and performance fixes. The Windows/D3D12 port, the
-> reverse engineering and the game patches are the original author's work; see
-> [Linux port (this fork)](#linux-port-this-fork) for what this fork changes and
-> [Credits](#credits-and-legal-notice). The fork's default branch is `linux-port`.
+> **This is a fork** of [0c0de/splatterhouse-decomp](https://github.com/0c0de/splatterhouse-decomp),
+> the original Windows port. The reverse engineering, the game patches, the F5 options screen and DLC
+> support are the original author's work. This fork adds the Linux/Vulkan build, fixes for crashes
+> and slowdowns found on Linux, and FSR on Vulkan. See [What this fork changes](#what-this-fork-changes)
+> and [Credits](#credits-and-legal-notice).
 >
-> **Playing on Windows?** Use the original repository and its releases. This branch is Linux-only:
-> its Windows/D3D12 build isn't maintained or tested.
+> **Playing on Windows?** Use the original repository and its releases. This branch (`linux-port`)
+> is Linux-only.
+
+> **No game code or assets are included.** You need your own copy of the Xbox 360 game.
+
+**Status: playable.** Menus, story mode, cutscenes, combat and chapter select work. The game runs at
+60 FPS with the official 60 FPS patch. Text can be shown in other languages, and DLC loads. There are
+no release binaries yet: you build it yourself (about 15 minutes, see below).
 
 ---
 
-## Quick start (what you need to do)
+## Requirements
 
-**Requirements**
+| | |
+|---|---|
+| **OS** | 64-bit Linux (x86-64). Developed and tested on Ubuntu 26.04 in a KDE Plasma Wayland session. |
+| **CPU** | x86-64-v2 or newer (SSE4.2 and SSSE3: any Intel/AMD CPU from about 2009 on). Tested on an i7-6700K (4 cores / 8 threads). |
+| **GPU** | Vulkan driver with **`VK_EXT_fragment_shader_interlock`**. Tested on an AMD RX 6600 with Mesa RADV 26.0. Check yours with `vulkaninfo \| grep fragment_shader_interlock`. |
+| **Disk** | About 5 GB for the extracted game plus about 2 GB for the source and build. |
+| **Game** | Your own copy of **Splatterhouse for Xbox 360** (an ISO you made from your disc). |
 
-- Windows 10/11 **x64**.
-- A GPU with **Direct3D 12 + Rasterizer-Ordered Views** (NVIDIA GTX 900+, AMD RX 400+, Intel Arc).
-- Your own **Splatterhouse (Xbox 360) ISO**.
+**Why the interlock extension?** The game relies on how the Xbox 360's eDRAM blends and stores pixels.
+The only path that reproduces its lighting correctly is `fsi` (fragment shader interlock, the Vulkan
+counterpart of D3D12's ROV): blending is done in the shader. Without it, the scene renders almost
+black. This path costs GPU time per pixel, which is why the internal resolution matters for
+performance (see [Performance](#performance-and-recommended-settings)).
 
-**Steps**
+---
 
-1. **Download the release** and extract it anywhere (not inside `Program Files`). You get
-   `splatterhouse.exe`, the DLLs, `install.bat`, `tools\` and optionally `shadercache\`.
-2. **Drag your Splatterhouse ISO onto `install.bat`** (or run `install.bat` and paste the path).
-3. **Run `splatterhouse.exe`** and play. The first boot takes a little longer while the shader cache
-   is loaded; afterwards it starts in a couple of seconds.
+## Getting started
 
-That's it. The installer creates `splatterhouse.toml` for you with sane defaults (see
-[Configuration](#configuration-splatterhousetoml-next-to-the-exe)).
+### 1. Install the build tools
 
-**What the installer does**
+On Ubuntu/Debian:
 
-- Extracts the ISO with `tools\extract-xiso.exe` into **`assets\`** (`-s` skips `$SystemUpdate`).
-- Decrypts the XEX with `tools\xextool.exe` to `assets\default.dec.xex` (the runtime also accepts the
-  retail `default.xex`; the decrypted one is used if present).
-- Creates `splatterhouse.toml` if it does not exist, choosing the **internal resolution based on your
-  GPU**: **AMD/Intel → 1280x720**, NVIDIA → 1920x1080 (both are upscaled to your window with FSR).
-  You can change it any time with **F5 → Preset**.
-- Copies `shadercache\*` (if the release ships it) to `%USERPROFILE%\Documents\splatterhouse\cache\shaders\shareable`,
-  which avoids most first-time shader stutters.
-- Verifies that the extraction produced `default.xex` + `data\`, and warns if not.
-
-**Folder layout after installing**
-
+```bash
+sudo apt install git cmake ninja-build clang-20 python3 \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxkbcommon-dev \
+  libwayland-dev libdecor-0-dev libasound2-dev libpulse-dev libpipewire-0.3-dev libudev-dev libdbus-1-dev
 ```
-splatterhouse.exe
-splatterhouse.toml          # created by install.bat
-rexruntimerd.dll            # runtime
-rexgpu-xenosrd.dll          # GPU (Xenos/D3D12) plugin
-amd_fidelityfx_dx12drel.dll # FSR/CAS (only in builds with FidelityFX)
-assets\
-  default.xex               # retail XEX (from the ISO)
-  default.dec.xex           # decrypted XEX (installer)
-  data\...                  # game data
-dlc\                        # optional: drop DLC packages here (created on startup)
+
+- **Compiler and build tools:** the build preset calls `clang-20`/`clang++-20` by name. With another
+  Clang (18 or newer), add `-DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19` (for example)
+  to the configure command. Only Clang 20 has been tested. CMake must be 3.25 or newer.
+- **Bundled libraries:** SDL3, the Vulkan headers and the other libraries come with the SDK.
+- **Window, audio and input packages:** the `-dev` packages above are the window, audio and input
+  backends that SDL looks for. Without them SDL builds, but without those backends.
+
+### 2. Extract your game
+
+Build [extract-xiso](https://github.com/XboxDev/extract-xiso) (it isn't in the Ubuntu archive), then:
+
+```bash
+git clone -b linux-port https://github.com/thefixinhixon/splatterhouse-decomp.git
+cd splatterhouse-decomp
+extract-xiso -s -d game -x "/path/to/Splatterhouse.iso"   # creates game/default.xex and game/data/
 ```
+
+You only need the retail `default.xex`. The build decrypts it, so no XEX tool is needed (a
+`default.dec.xex` made with XexTool also works, if you already have one).
+
+### 3. Build
+
+```bash
+git submodule update --init extern/rexglue-sdk
+git -C extern/rexglue-sdk submodule update --init --recursive
+cmake --preset linux-amd64-relwithdebinfo
+cmake --build out/build/linux-amd64-relwithdebinfo -j$(nproc)
+```
+
+The first build recompiles the game (about 2.5 minutes of codegen, then about 15 minutes of
+compiling on 8 threads). After that, rebuilds take seconds unless the SDK or codegen changes.
+
+**If the build stops with `XEX file not found`,** the game isn't at `game/default.xex`. Fix the path
+and build again.
+
+### 4. Run
+
+```bash
+cd out/build/linux-amd64-relwithdebinfo
+ln -s ../../../game assets        # once: the game looks for its data in ./assets
+./splatterhouse
+```
+
+- **Config file:** none is needed. The port picks the Vulkan `fsi` path itself. Settings you save
+  from the in-game options screen (**F5**, then **S**) go to `splatterhouse.toml` in this folder.
+- **Libraries:** the build copies `librexruntimerd.so`, `librexgpu-xenosrd.so` and
+  `libTracyClientrd.so` next to the executable.
+- **Don't rebuild while the game is running.** Replacing those libraries under a running game
+  corrupts it.
+- **Stutter-free first play:** shaders are compiled in the background the first time you see a new
+  material. Instead of stuttering, an object can be missing for a frame or two (pop-in). The cache
+  is kept in `~/.local/share/splatterhouse/cache/`, so it only happens once.
 
 ---
 
 ## Controls
 
+**Gamepad:** Xbox-style controllers work through SDL (the `sdl` input backend, the default).
+
+**Keyboard:** set `mnk_mode = true` in `splatterhouse.toml` to play with the keyboard as an emulated
+pad. Every key can be rebound with the `keybind_*` settings (F4).
+
+| Pad | Keys | Pad | Keys |
+|---|---|---|---|
+| A | Space, `;` | Left stick | W A S D (click: F) |
+| B | Backspace, `'` | Right stick | Arrow keys (click: K) |
+| X | L | D-pad | Shift + arrow keys |
+| Y | P | LT / RT | Q or I / E or O |
+| Start | Enter, X | LB / RB | 1 / 3 |
+| Back | Tab, Z | | |
+
+**Hotkeys**
+
 | Key | Action |
 |---|---|
-| **F3** | Debug overlay (FPS, frame stats) |
-| **F4** | Runtime settings overlay (every cvar) |
-| **F5** | **Port options screen** (graphics, language, 60 FPS patch, level unlock…) |
+| **F5** | **Port options** (graphics, upscaling, 60 FPS patch, languages, level unlock…) |
+| **F3** | Debug overlay (FPS, frame statistics) |
+| **F4** | Runtime settings (every setting, including key bindings) |
 | **F7** | Achievements |
 | **`** (backtick) | Console |
 
-The game itself is played with a **gamepad** (Xbox/XInput-compatible; the input backend is
-configurable with `input_backend = "sdl"` or `"xinput"`).
+### The F5 options screen
 
-The options screen (`F5`) is the port's own, in the game's visual style.
+The port's own options screen, in the game's style. The game's menus are compiled Flash (Scaleform)
+and can't be extended, so the options live here.
 
-**Using the F5 screen**
+- **Navigation:** ↑/↓ (or the mouse wheel) select a row, ←/→ change it, **S** saves to
+  `splatterhouse.toml`, and **Esc** or **F5** closes. Clicking also works.
+- **Saving:** keeps your other settings, and the previous file is kept as `splatterhouse.toml.bak`.
+  Rows marked `[restart]` (the video mode) apply on the next start.
+- **Interface → Menu language:** switches this screen between English and Spanish.
+  **Game → Game language** is separate: it sets the game's own text.
+- **Presets:** Low/Medium/High/Ultra set the *vertical* internal resolution (540p/720p/900p/1080p),
+  keep your aspect ratio and turn on FSR.
+- **Hidden rows:** rows for Windows-only settings (D3D12 render path, tearing modes, PSO threads)
+  don't appear on Linux.
 
-- ↑/↓ (or the mouse wheel) move the selection, ←/→ change the value, **S** saves to
-  `splatterhouse.toml`, **Esc** or **F5** closes. Mouse click also works.
-- **Interface → Menu language** switches this screen between English and Spanish
-  (`sh_menu_language`); it applies immediately. **Game → Game language** is separate: it sets the
-  game's own text (`sh_language`).
-- Rows tagged `[restart]` need a restart to apply (video mode).
-- Saving rewrites the file; the previous version is kept as `splatterhouse.toml.bak`.
-- **Presets** change only the *vertical* internal resolution (Low 540p / Medium 720p / High 900p /
-  Ultra 1080p) and keep your aspect ratio, so they don't break an ultrawide setup.
+---
+
+## Performance and recommended settings
+
+The **internal resolution** is the biggest lever. The `fsi` path does blending inside the pixel
+shader, so its cost grows with the number of pixels, and heavy fights draw a lot of them. On AMD and
+Intel GPUs this per-pixel interlock is especially expensive.
+
+**Recommended start:** 720p internal resolution (F5 → **Preset → Medium**, or **Internal
+resolution → 1280x720**) with **Presentation → `fsr`**. FSR 1 upscales to your window or screen and
+sharpens it. On the test machine (RX 6600, i7-6700K) this held a median of **60 FPS** through a full
+play session, including heavy fights and areas whose shaders weren't cached yet.
+
+**If it's still slow:**
+- Lower the preset to **Low** (540p).
+- Turn off **Presentation antialiasing** (FXAA) and **Native 2x MSAA**.
+
+**If you have headroom:** raise the internal resolution. `cas` (sharpening only) or `bilinear` are
+also available.
+
+**Frame rate and game speed:** the game paces itself to a 60 Hz guest vblank. With the 60 FPS patch,
+game time follows the real frame time (`sh_60fps_realtime`, on by default). If your system drops
+below 60, the game stays at normal speed instead of going into slow motion.
+
+**Reporting a slow scene:** start the game with `./splatterhouse --sh_perf_log=true`. It writes a
+`[sh-perf]` line every 2 seconds with frame timings to the log. Attach the log to the report.
 
 ### Ultrawide (21:9, 32:9)
 
-Ultrawide works **automatically**: on startup the *width* of the internal video mode is matched to
-the aspect ratio of your window/monitor (`sh_aspect = "auto"`), so the game renders that aspect
-natively — no pillarboxing, no stretching. The log shows it:
+This works automatically: on startup, the *width* of the internal video mode is matched to your
+window or screen (`sh_aspect = "auto"`). The game renders that aspect natively, with no bars and no
+stretching. The log shows the result:
 
 ```
 [sh-aspect] auto: internal mode 2560x1080 (was 1920x1080, screen 2.37:1)
 ```
 
-You can override it in `F5`:
-
-- **Internal aspect** → `auto` (default), `16:9`, `21:9`, `32:9`.
-- **Internal resolution** → up to `3440x1440` (including `2560x1080`); picking one sets `sh_aspect` to
-  `keep` so your choice is respected.
-
-Note that a wider mode costs more pixels in the ROV path (~33 % more from 16:9 1080p to 21:9 1080p);
-if combat performance suffers, lower the preset.
-
-### Frame rate: 60 ↔ 30 jumping and tearing
-
-The game is synchronized to the guest vblank (60 Hz). If the monitor presentation is also
-vblank-synchronized, any frame that takes **more than 16.6 ms** waits for the *next* vblank (33 ms)
-and, since the next frame is late again, the game gets **stuck at 30** until the load drops. It is not
-a double-buffer problem: the port uses a 3-buffer flip chain (DXGI `FLIP_DISCARD`, 3 buffers, up to 3
-frames queued) and a 3-image guest output mailbox.
-
-The presenter uses **adaptive tearing** (`d3d12_present_adaptive_tearing = true`): it measures the
-real guest frame rate and allows tearing **only on frames that miss the 60 FPS budget**. Result:
-
-- **At 60 FPS** the present is vblank-synchronized → **no tearing**.
-- **Below 60 FPS** the present stops blocking → the frame rate degrades progressively (58, 52, 45…)
-  instead of locking to 30. There may be slight tearing while it is below 60: that's the price of not
-  dropping to 30.
-
-`F5 → Tearing / VRR` has three states: `auto (only below 60)` (default), `always (VRR)` (always
-tear — ideal with **G-Sync/FreeSync**) and `off (60/30)` (old behaviour, never tear).
-
----
-
-## Features
-
-**Working**
-
-- **Full static recompilation** of the game (~208 generated C++ files); no known crashes in gameplay.
-- **Correct 3D lighting and post-processing** through the D3D12 **ROV** path (reproduces the Xbox 360
-  eDRAM; the alternative RTV path loses the lighting).
-- **60 FPS** with the official 60 FPS patch applied durably (data + one instruction).
-- **FSR** (FidelityFX EASU/RCAS) upscaling, plus CAS and FXAA options.
-- **Ultrawide** (21:9/32:9) rendered natively, automatic.
-- **Localized text** (Spanish/French/Italian/German/Japanese…), audio always in English.
-- **DLC support** (Survival Arenas, masks…): drop the packages in `dlc\` and they are installed
-  automatically.
-- **All story chapters selectable** (level unlock, on by default).
-- **Installer**: drag the ISO and you're done.
-- **Precompiled shader cache** support to avoid stutters.
-
-**Known limitations**
-
-- **Stutters the first time a new area is loaded** if the shader cache is incomplete: the port has to
-  translate the shader and create the D3D12 pipeline (~2–11 ms each, hundreds in a row). The SDK does
-  it on background threads and skips the draw until it's ready (brief popping, no freeze), and
-  pre-creates the whole cache at startup. **Shipping a complete `shadercache\`** is the fix
-  (`tools\pack_shadercache.bat`).
-- **ROV performance on AMD/Intel**: the D3D12 interlock is much more expensive in **combat** (many
-  enemies + shadow passes), which is why the installer defaults those GPUs to 720p. See
-  `docs/rov-performance.md` §7.
-- **`rtv` render path is not usable**: the scene goes almost black. Always use `rov` (the default).
-- **The options live in a separate screen (F5)**, not inside the game's own menu: the UI is Scaleform
-  GFx compiled in `.gfx` files (with Xbox 360 XCompress compression and no `.fla` sources), so it can't
-  be extended.
-- **Windows x64 only** (D3D12).
+- **Override:** F5 → **Internal aspect** (`auto`, `16:9`, `21:9`, `32:9`). Picking an **Internal
+  resolution** by hand sets it to `keep`.
+- **Cost:** a wider image means more pixels. 21:9 at 1080p is about 33% more GPU work than 16:9 at
+  1080p.
 
 ---
 
 ## DLC (Survival Arenas, masks, etc.)
 
-Drop the **STFS packages** (files whose first 4 bytes are `CON `, `LIVE` or `PIRS`, often without
-extension or with `.xcp`) into a folder named **`dlc`** next to `splatterhouse.exe`. The port creates
-that folder on startup, logs its path, and installs the packages automatically (extraction + header +
-license mask); they then appear in the game menu.
+Put the **STFS packages** in a folder named **`dlc`** next to the `splatterhouse` executable. These
+are files whose first 4 bytes are `CON `, `LIVE` or `PIRS`, often with no extension or a `.xcp`
+extension. On startup the port creates the folder, logs its path and installs any packages it finds.
+They then appear in the game's menus.
 
 ```
-<game folder>\dlc\35A606675772B2C90230F20D17FA0F11E55C1B594E
-<game folder>\dlc\9E079D75E93C05D42B269A99751474F659AACE954E
+out/build/linux-amd64-relwithdebinfo/dlc/35A606675772B2C90230F20D17FA0F11E55C1B594E
 ```
 
-**Other accepted locations** (the port scans all of them):
+- **Other folders scanned:** `~/.local/share/splatterhouse/4E4D07F0/00000002/`,
+  `~/.local/share/splatterhouse/0000000000000000/4E4D07F0/00000002/` and
+  `~/.local/share/splatterhouse/<profile-xuid>/4E4D07F0/00000002/`. The `$XDG_DATA_HOME` location
+  is used instead of `~/.local/share` if that variable is set.
+- **Installed once:** packages are extracted to
+  `~/.local/share/splatterhouse/0000000000000000/4E4D07F0/00000002/<name>/`. After the first run
+  you can delete the originals.
+- **Nothing shows up?** Run `REX_SH_DLC=1 ./splatterhouse` to log which content the game looks for
+  and opens. Also check that the first 4 bytes of each file are `CON `, `LIVE` or `PIRS`
+  (`head -c4 file`).
 
-- `%USERPROFILE%\Documents\splatterhouse\4E4D07F0\00000002\`
-- `%USERPROFILE%\Documents\splatterhouse\0000000000000000\4E4D07F0\00000002\`
-- `%USERPROFILE%\Documents\splatterhouse\<profile-xuid>\4E4D07F0\00000002\` (e.g. `B13EBABEBABEBABE`)
-
-**Troubleshooting**
-
-- Nothing appears? Launch with the environment variable **`REX_SH_DLC=1`** (`set REX_SH_DLC=1` in a
-  command prompt, then run the exe) to log exactly what content the game enumerates/opens, and check
-  `splatterhouse.log`.
-- Make sure the files really are STFS packages (hex-view the first 4 bytes: `CON `/`LIVE`/`PIRS`).
-- Installation is idempotent: after the first run the content is extracted to
-  `...\0000000000000000\4E4D07F0\00000002\<name>\`, so you can delete the originals.
-
-Full details (package format, load chain, diagnostics) in **`docs/dlc.md`**.
+More detail in `docs/dlc.md`.
 
 ---
 
 ## Troubleshooting
 
-**The game closes by itself right after starting (black screen).**
-The game data isn't where the runtime looks for it (usually the ISO was extracted by hand without the
-`data` folder, or into a subfolder). The port detects this *before* booting and exits with a readable
-message:
+**The game exits right away and leaves `assets_error.txt`.**
+The game data isn't where the port looks for it. `assets_error.txt`, next to the executable, says
+which folder was checked and what's missing.
+- **Expected layout:** `assets/default.xex` plus `assets/data/`.
+- **Other accepted places:** the executable's own folder, or a single subfolder inside `assets/`.
+- **Somewhere else:** set `game_data_root = "/path/to/game"` in `splatterhouse.toml`, or pass
+  `--game_data_root=...`.
 
-- The details are also written to **`assets_error.txt`** next to the exe (which folder it checked and
-  what is missing).
-- It accepts the data in **`assets\`**, in the **exe folder itself**, or in a **single subfolder of
-  `assets\`** (e.g. `assets\Splatterhouse\default.xex`).
-- Point it somewhere else with `game_data_root = "D:\path"` in `splatterhouse.toml` (or
-  `--game_data_root=...`).
-- Escape hatch: `sh_skip_assets_check = true`.
+**The 3D scene is almost black.**
+The render path is not `fsi`. Remove any `render_target_path_vulkan` line from
+`splatterhouse.toml`; the port then picks `fsi` itself. Also check that your driver has
+`VK_EXT_fragment_shader_interlock`.
 
-**Black screen but the game is running.**
-`splatterhouse.toml` is missing or has no `gpu_plugin`; the default is `gpu_plugin = "xenos"` and
-`render_target_path_d3d12 = "rov"`. Run `install.bat` or create the file (see
-[Configuration](#configuration-splatterhousetoml-next-to-the-exe)).
+**Fights are slow.**
+Lower the internal resolution and use FSR (see [Performance](#performance-and-recommended-settings)).
 
-**Combat is slow (especially AMD/Intel GPUs).**
-Lower the internal resolution: **F5 → Preset → Low/Medium**, or `F5 → Internal resolution`. The ROV
-cost scales with pixels; 720p has ~2.2× fewer pixels than 1080p. See `docs/rov-performance.md` §7.
+**A crash with SIGBUS, often while a level loads.**
+The game backs its memory with a large shared-memory file in `/dev/shm`. Check that `/dev/shm` isn't
+full (`df -h /dev/shm`).
 
-**I see a horizontal tear line.**
-It should normally not happen at 60 FPS (adaptive tearing). If you are below 60 FPS it can appear; set
-`F5 → Tearing / VRR → off (60/30)` to never tear (you'll get the 60/30 behaviour instead), or
-enable G-Sync/FreeSync in your GPU panel and use `always (VRR)`.
+**A controller keeps rumbling after the game closed.**
+Start the game again and quit normally: it stops the motors when it opens the pad. While the game
+is running, a rumble that the game stops refreshing is cut after `sh_rumble_timeout_ms` (10 s).
 
 **Where are the logs?**
-`splatterhouse.log` next to the exe (`log_level = "warn"` by default; raise it to `info` or `trace` for
-more detail). Archived logs are in `logs\`.
+In `logs/` in the folder you start the game from, or in the file set by `log_file` in
+`splatterhouse.toml`. For more detail set `log_level = "info"` or `"trace"`.
 
 ---
 
-## Configuration (`splatterhouse.toml`, next to the exe)
+## Configuration (`splatterhouse.toml`)
 
-| cvar | values | notes |
+`splatterhouse.toml` lives next to the executable and is optional. F5 writes it for you; these are
+the settings you're most likely to change by hand.
+
+| Setting | Values | Notes |
 |---|---|---|
-| `gpu_plugin` | `xenos` | **required** (empty = no GPU = black screen) |
-| `render_target_path_d3d12` | `rov` | **required** (`rtv` breaks the lighting) |
-| `present_effect` | `fsr` (or `bilinear`, `cas`, `fsr2`, `fsr3`) | presentation upscaling (FidelityFX builds) |
-| `video_mode_width/height` | e.g. `1920/1080` | guest internal resolution (lower it to gain FPS) |
-| `sh_aspect` | `auto`/`16:9`/`21:9`/`32:9`/`keep` | internal aspect; `auto` matches the window (ultrawide native) |
-| `video_mode_refresh_rate` | `60` | guest video mode refresh rate |
-| `vsync` | `false` | guest vblank is 60 Hz regardless |
-| `d3d12_present_frame_limiter[_fps]` | `true` / `60` | host present rate cap |
-| `d3d12_present_adaptive_tearing` | `true` | tear only when the frame misses 60 FPS |
-| `d3d12_allow_variable_refresh_rate_and_tearing` | `false` | `true` = always tear ("VRR mode") |
-| `sh_language` | `auto`/`english`/`spanish`/… | **text** language (audio is always English) |
-| `sh_menu_language` | `english`/`spanish` | language of the F5 options screen |
-| `sh_60fps` | `true` | 60 FPS patch |
-| `sh_unlock_levels` / `sh_unlock_levels_max` | `true` / `7` | chapter select unlock |
-| `log_level` | `warn` / `info` / `trace` | log verbosity |
+| `video_mode_width` / `video_mode_height` | e.g. `1280` / `720` | internal resolution, the main performance lever |
+| `present_effect` | `bilinear`, `cas`, `fsr` | upscaling to the window |
+| `swap_post_effect` | `none`, `fxaa`, `fxaa_extreme` | antialiasing on the final image |
+| `native_2x_msaa` | `false` / `true` | 2x MSAA in the guest render targets (costly) |
+| `sh_aspect` | `auto`, `16:9`, `21:9`, `32:9`, `keep` | internal aspect (`auto` matches the window) |
+| `fullscreen` | `false` / `true` | |
+| `texture_cache_memory_limit_soft` | MB, e.g. `512` | |
+| `sh_60fps` / `sh_60fps_realtime` | `true` / `true` | 60 FPS patch; game time follows the real frame time |
+| `sh_language` | `auto`, `english`, `french`, `italian`, `german`, `spanish`, `japanese` | game **text** (audio is always English) |
+| `sh_menu_language` | `english`, `spanish` | language of the F5 screen |
+| `sh_unlock_levels` / `sh_unlock_levels_max` | `true` / `7` | all chapters selectable |
+| `mnk_mode` | `false` / `true` | keyboard as an emulated pad |
+| `input_backend` | `sdl` | the only backend on Linux |
+| `sh_rumble_timeout_ms` | `10000` (`0` = off) | cuts a rumble the game stops refreshing |
+| `log_level` | `warn`, `info`, `trace` | |
+
+These defaults are already right for Linux, so leave them out of the file unless you are testing:
+- `render_target_path_vulkan = "fsi"`
+- `vulkan_async_skip_incomplete_frames = false`
+- `clear_memory_page_state = false`
+- `vulkan_async_shaders_nonblocking = true`
+
+---
+
+## What this fork changes
+
+Compared with the original Windows port. Measurements and the full investigation notes are in
+`AGENTS.md`, section "Linux port".
+
+- **Linux/Vulkan build:**
+  - Linux always uses Vulkan with the `fsi` path.
+  - The SDK's SPIR-V translator read the texture exponent bias from the wrong fetch-constant word,
+    so the whole image came out dark and lost most of its green; this is fixed.
+  - Patches from the original author's private SDK copy were re-applied where Linux needs them:
+    - the 60 Hz guest vblank with vsync off;
+    - saving `splatterhouse.toml` without losing other keys;
+    - the rumble watchdog;
+    - function discovery fixes in codegen.
+- **Level-load freeze fixed:** a stale signal on the XCTD layer's completion event made
+  `GetOverlappedResult` return while a read was still pending. A 64 KB block of a level file was then
+  replaced by the previous one, which crashed about half of all level loads on Linux
+  (`src/sh_overlapped_fix.cpp`).
+- **Performance:**
+  - Multi-object waits no longer spin a CPU core.
+  - Repaints of an unchanged image are paced.
+  - Shader translation and pipeline creation never block the renderer.
+  - Vertex and index data written by the CPU is no longer uploaded again every frame.
+  - Memory write-watch faults no longer re-read `/proc/self/maps` under a global lock.
+
+  On the test machine, the median of a play session went from 33 to 60 FPS. Fights that used to drop
+  to about 20 FPS now stay near 60.
+- **60 FPS patch:** game time follows the real frame time, so dropping below 60 FPS no longer means
+  slow motion.
+- **FSR/CAS on Vulkan:** the spatial FidelityFX effects use precompiled shaders and no longer need
+  the FidelityFX SDK.
+- **Smaller changes:**
+  - Level warp (`sh_warp`, a developer tool) works on Linux.
+  - The F5 screen is in English, with Spanish selectable.
+  - Documentation is in English.
+  - The build reads the retail `default.xex` directly.
+  - `tools/linux/headless_run.sh` runs automated tests in a virtual display (see `AGENTS.md`).
 
 ---
 
 # Development
 
-## How this port was made
+## How the port works
 
-There is no source code available: the port starts from the **retail XEX** and is **statically
-recompiled**.
+There is no source code for the game. The port starts from the **retail XEX** and is **statically
+recompiled**:
 
-1. **ISO extraction** (`tools/extract-xiso.exe -x -s`): produces `default.xex` + `data/`.
-2. **XEX decryption** (`tools/xextool.exe -e u -c b`): produces `default.dec.xex` (codegen input).
-3. **Codegen** (`rexglue codegen splatterhouse_manifest.toml`): ReXGlue analyses the PowerPC code,
-   discovers functions and emits **recompiled C++** (`generated/*.cpp`, ~208 files) plus a function
-   registry and the guest image.
-4. **Runtime** (SDK): 4 GB guest memory, xboxkrnl/xam kernel shims, VFS/STFS (XContent), threading,
-   GPU (Xenos → D3D12), audio (XMA/SDL), input (SDL/XInput).
-5. **SDK patches** (see `AGENTS.md`): codegen fixes (non-ABI register propagation `r0/r2/r11/r12` —
-   fixes `__finally`/`__chkstk`), function discovery via data pointers, `vmaxuw`, access-violation
-   instrumentation, adaptive present pacing, content installation, etc.
-6. **Game patches**, applied durably in `src/` (not in `generated/`, which is gitignored and
-   regenerated):
-   - **60 FPS**: data (`0x82F8FF58/5C`: 1/15 and 1/30 → **1/60**) plus one instruction (`0x8247A4AC`)
-     replicated with a **strong override** of the codegen's weak function.
-   - **Localization**: override of `sub_827B65E0` that forces the language **only** on the
-     language-load path (text), leaving audio in English.
-   - **Level unlock**: overrides of `sub_82E5C540` / `sub_82EF0FE0` to report the max chapter.
+1. **Codegen** (`rexglue codegen splatterhouse_manifest.toml`, run by the build): ReXGlue loads and
+   decrypts `game/default.xex`, analyses the PowerPC code and emits recompiled C++. The output goes
+   to `generated/` (about 200 `.cpp` files, gitignored), together with a function table.
+2. **Runtime** (the SDK):
+   - guest memory;
+   - the Xbox kernel and XAM functions;
+   - the file system and STFS content;
+   - threads;
+   - the GPU (Xenos → Vulkan);
+   - audio (XMA → SDL) and input (SDL).
+3. **SDK patches:** codegen and runtime fixes, kept on the SDK fork's `linux-port` branch. `AGENTS.md`
+   lists them and explains why each one exists.
+4. **Game patches**, in `src/` (never in `generated/`, which is regenerated). Each one overrides a
+   recompiled function by name:
+   - **60 FPS:** the frame-time data (`0x82F8FF58/5C`) plus one instruction (`0x8247A4AC`), and
+     the real-time frame step (`src/sh_frame_time_hook.cpp`).
+   - **Localization:** `sub_827B65E0` returns the chosen language only on the text-loading path, so
+     audio stays in English.
+   - **Level unlock:** `sub_82E5C540` / `sub_82EF0FE0` report the last chapter as completed.
+   - **Level-load fix:** `sub_829F0958` (`GetOverlappedResult`) ignores a stale completion signal.
+   - **Level warp:** a hook on the present function `sub_822551A0` (`src/sh_warp_hook.cpp`).
 
-The old in-house runtime (XenonRecomp) remains in `legacy/` (reference only).
+**After changing codegen:** changes under `extern/rexglue-sdk/src/codegen/` need the `rexglue` target
+rebuilt, then `extern/rexglue-sdk/out/linux-amd64/rexgluerd codegen splatterhouse_manifest.toml
+--ignore-stamp`, then a full build.
 
-## Building from source
+## Testing
 
-**Requirements**
-
-| Tool | Version | Notes |
-|---|---|---|
-| Windows 10/11 | — | D3D12 |
-| Visual Studio 2022/2026 (Clang) or LLVM | Clang 18+ (tested 22.1.8) | |
-| CMake | 3.25+ | |
-| Ninja | 1.11+ | |
-| Python | 3.9+ | `tools/` scripts |
-| Git | 2.40+ | submodules |
-
-**Clone and set up**
-
-```powershell
-git clone https://github.com/0c0de/splatterhouse-decomp.git
-cd splatterhouse-decomp
-git submodule update --init extern/rexglue-sdk
-git -C extern/rexglue-sdk submodule update --init --recursive
-```
-
-**Put your copy of the game** in `game\` (gitignored):
-
-```
-game\default.xex        # retail, straight from the ISO
-game\default.dec.xex    # decrypted with xextool -e u -c b (needed by codegen)
-game\data\...           # the rest of the ISO
-```
-
-**Configure and build**
-
-```powershell
-# RelWithDebInfo = good performance (use this to play); Debug is very slow
-cmake --preset win-amd64-relwithdebinfo
-#    optional FSR/FidelityFX:
-#    cmake --preset win-amd64-relwithdebinfo -DREXGLUE_ENABLE_FIDELITYFX=ON
-
-cmake --build out\build\win-amd64-relwithdebinfo --target splatterhouse -j 6
-```
-
-Codegen runs automatically when its stamp is stale. To regenerate manually (~800 s, 208 files):
-
-```powershell
-extern\rexglue-sdk\out\win-amd64\rexglued.exe codegen splatterhouse_manifest.toml --ignore-stamp
-```
-
-**Run**
-
-The executable loads the DLLs **from its own directory**, so always run it from the build folder:
-
-```powershell
-cd out\build\win-amd64-relwithdebinfo
-.\splatterhouse.exe        # log -> splatterhouse.log
-```
-
-The build folder needs the game data. Either copy the ISO contents there or create an `assets`
-junction to the repo's `game` folder (the port looks for `assets\`, or the exe folder itself):
-
-```powershell
-New-Item -ItemType Junction -Path out\build\win-amd64-relwithdebinfo\assets -Target "$PWD\game"
-```
-
-**Important notes**
-
-- After rebuilding the runtime (`--target rexruntime`), copy the DLLs from
-  `extern\rexglue-sdk\out\win-amd64\` (`rexruntimerd.dll`, `rexgpu-xenosrd.dll`, and their `.pdb`) into
-  your build folder — the SDK emits them to its own output directory, and the exe will happily load an
-  old copy otherwise.
-- With **FidelityFX** (`-DREXGLUE_ENABLE_FIDELITYFX=ON`) an extra **`amd_fidelityfx_dx12drel.dll`** is
-  produced; it must sit next to the exe **and** next to `rexruntimed.dll`/`rexglued.exe`, or codegen
-  fails with `0xC0000135` (DLL not found).
-- The build preset `win-amd64-debug` is for debugging (unoptimized recompiled code: expect low FPS).
-
-**Making a release folder**: `tools\make_release.bat` copies the exe, the DLLs, `install.bat`, `tools\`,
-the docs and (if present) `shadercache\` into `splatterhouse-decomp-release\`, ready to zip. It
-deliberately does **not** ship a `splatterhouse.toml` so that `install.bat` can generate it on the
-user's machine with the right internal resolution for their GPU.
-
-## Linux port (this fork)
-
-The `linux-port` branch builds and runs the port natively on Linux with the SDK's **Vulkan**
-renderer. It needs the SDK fork [thefixinhixon/rexglue-sdk](https://github.com/thefixinhixon/rexglue-sdk)
-(branch `linux-port`), which `.gitmodules` already points at. Tested on Ubuntu with an AMD RX 6600
-(Mesa RADV) and an i7-6700K; the latest play session held 60 FPS (median) at 720p with FSR.
-
-**What it changes** (details and measurements in `AGENTS.md`, "Linux port"):
-
-- **Renderer:** Linux always uses Vulkan with the `fsi` render-target path (fragment shader
-  interlock, the Vulkan equivalent of ROV), so the GPU needs `VK_EXT_fragment_shader_interlock`.
-  The Vulkan texture-fetch exponent bias was read from the wrong fetch-constant word (the whole image
-  came out dark); fixed in the SDK.
-- **Level-load freeze:** a stale completion signal on the XCTD layer's event made
-  `GetOverlappedResult` return while a read was still pending, so a 64 KB block of a level file was
-  replaced by the previous one (`src/sh_overlapped_fix.cpp`).
-- **Performance:**
-  - Multi-object waits no longer spin.
-  - UI-only repaints are paced.
-  - Shader translation and pipeline creation never block the renderer (no first-play stutter).
-  - CPU vertex/index data is no longer re-uploaded every frame (`clear_memory_page_state=false`).
-  - Write-watch faults no longer parse `/proc/self/maps` under a global lock.
-
-  On the test machine the play-session median went from 33 to 60 FPS, and fights that used to
-  drop to ~20 FPS stay near 60.
-- **60 FPS patch:** game time now advances by the real frame time, so the game no longer slows
-  down when it drops below 60 FPS (`sh_60fps_realtime`).
-- **FSR:** spatial FSR/CAS (`present_effect = "fsr"` or `"cas"`) works on Vulkan without the
-  FidelityFX SDK.
-- **Other:**
-  - The 60 Hz guest vblank and the toml merge on save from the original author's private SDK
-    patches are re-applied.
-  - Level warp (`sh_warp`) works on Linux.
-  - The F5 menu is in English (Spanish selectable).
-  - The docs are translated to English.
-  - `tools/linux/headless_run.sh` runs the game under Xvfb for automated tests.
-
-**Build** (Clang 18+, CMake 3.25+, Ninja, Vulkan loader + Mesa or another driver with fragment
-shader interlock):
-
-```bash
-git clone -b linux-port https://github.com/thefixinhixon/splatterhouse-decomp.git
-cd splatterhouse-decomp
-git submodule update --init extern/rexglue-sdk
-git -C extern/rexglue-sdk submodule update --init --recursive
-# put the game in game/ as described above (default.xex, default.dec.xex, data/ ...);
-# extract-xiso is packaged for most distributions
-cmake --preset linux-amd64-relwithdebinfo
-cmake --build out/build/linux-amd64-relwithdebinfo -j$(nproc)   # ~15 min the first time
-```
-
-**Run**
-
-```bash
-cd out/build/linux-amd64-relwithdebinfo
-ln -s ../../../game assets        # once
-./splatterhouse                   # settings: F5 in game, saved to splatterhouse.toml here
-```
-
-The build copies `librexruntimerd.so`, `librexgpu-xenosrd.so` and `libTracyClientrd.so` next to the
-executable. Don't rebuild while the game is running: replacing those files under a running game
-corrupts it.
-
-**Platform:** this branch targets Linux only. The Windows/D3D12 code from the original port is
-still in the tree, but it isn't built or tested here; Windows players should use
-[0c0de/splatterhouse-decomp](https://github.com/0c0de/splatterhouse-decomp).
-
-**Reporting a slow scene:** run with `--sh_perf_log=true`. It prints frame counters (`[sh-perf]`)
-to `splatterhouse.log` every 2 s.
+`tools/linux/headless_run.sh` runs a copy of the build in Xvfb, with software Vulkan presentation,
+muted audio and no real controllers. It drives the game with timed key presses and saves a
+screenshot at each one, plus the full log. It can repeat runs and count crashes (`RUNS=10`), and stop
+in gdb at the first crash (`GDB=1`). The checkpoints used for every change (boot, level-load
+stability, soak, performance) are described in `AGENTS.md`.
 
 ## Project layout
 
 ```
-install.bat                 # installer (drag the ISO onto it)
-assets/                     # installed game data (gitignored)
-game/                       # your copy of the game for development (gitignored)
-tools/
-  extract-xiso.exe          # extract the Xbox 360 ISO
-  xextool.exe               # decrypt the XEX
-  pack_shadercache.bat      # pack the shader cache for the release
-  make_release.bat          # build "splatterhouse-decomp-release\" with everything needed
-  setup.ps1 / recompile.py  # setup and codegen (dev utilities)
-generated/                  # recompiled code (autogenerated; gitignored)
-config/codegen.toml         # codegen flags + [functions] overrides
 src/
-  main.cpp                  # REX_DEFINE_APP + port cvars
-  splatterhouse_app.h       # ReXApp: asset paths, patches, DLC install, aspect, defaults
-  sh_60fps_hook.cpp         # 60 FPS patch (instruction)
-  sh_language_hook.cpp      # text localization
-  sh_unlock_hook.cpp        # level/chapter unlock
-  sh_uf_diag.cpp            # defensive fix for a null virtual call
+  main.cpp                  # app entry point and the port's settings
+  splatterhouse_app.h       # asset paths, patches, DLC install, aspect, platform defaults
   graphics_menu.h           # F5 options screen
-extern/rexglue-sdk/         # SDK submodule (with local patches)
-docs/rov-performance.md     # ROV performance analysis (why ROV, how to speed it up)
-docs/dlc.md                 # DLC support and installation
-AGENTS.md                   # technical log (status, SDK patches, decisions)
+  sh_60fps_hook.cpp         # 60 FPS patch (instruction)
+  sh_frame_time_hook.cpp    # game time follows the real frame time
+  sh_overlapped_fix.cpp     # level-load freeze fix
+  sh_xctd_cache_fix.cpp     # XCTD cache reader/writer race
+  sh_warp_hook.cpp          # level warp (dev)
+  sh_language_hook.cpp      # text localization
+  sh_unlock_hook.cpp        # chapter unlock
+  sh_uf_diag.cpp            # guard for a null virtual call
+config/codegen.toml         # codegen flags and extra function entry points
+generated/                  # recompiled code (generated; gitignored except rexglue.cmake)
+game/                       # your extracted game (gitignored)
+extern/rexglue-sdk/         # SDK submodule (fork, branch linux-port)
+tools/linux/headless_run.sh # headless test harness
+docs/                       # DLC, GPU, recompilation and ROV/FSI performance notes
+AGENTS.md                   # technical log: status, investigations, SDK patches, test checkpoints
+install.bat, tools/*.bat, tools/*.ps1   # Windows-only files from the original port (unused here)
 legacy/                     # old XenonRecomp runtime (reference only)
 ```
 
@@ -469,18 +393,18 @@ legacy/                     # old XenonRecomp runtime (reference only)
 
 ## Credits and legal notice
 
-- **ReXGlue SDK** — recompilation runtime and toolchain.
-- **Xenia** — the GPU/eDRAM, formats and many runtime foundations come from Xenia.
-- **extract-xiso** (xboxdev) and **XexTool** (xorloser) — ISO/XEX tools.
-- **60 FPS patch** — from `xenia-canary/game-patches` (author *illusion*), adapted to the recomp.
-- **FidelityFX / FSR** — AMD.
-- **Original port** — [0c0de](https://github.com/0c0de) (Jose Luis): the Windows port, the reverse
-  engineering, the game patches, the F5 menu, DLC support and the original SDK patches this fork
-  builds on.
-- **ReXGlue SDK** — [rexglue/rexglue-sdk](https://github.com/rexglue/rexglue-sdk) (Tom Clay and
-  contributors), licensed under the terms in `extern/rexglue-sdk/LICENSE`.
-- **Linux/Vulkan port and performance work in this fork** — [thefixinhixon](https://github.com/thefixinhixon),
-  developed with Claude Code.
+- **Original port:** [0c0de](https://github.com/0c0de) (Jose Luis). The Windows port, the reverse
+  engineering, the game patches, the F5 options screen, DLC support and the original SDK patches
+  this fork builds on.
+- **ReXGlue SDK:** [rexglue/rexglue-sdk](https://github.com/rexglue/rexglue-sdk) (Tom Clay and
+  contributors), under the license in `extern/rexglue-sdk/LICENSE`.
+- **Xenia:** the GPU/eDRAM emulation, the formats and much of the runtime come from Xenia.
+- **60 FPS patch:** from `xenia-canary/game-patches` (author *illusion*), adapted to the recompiled
+  game.
+- **FidelityFX FSR / CAS:** AMD.
+- **extract-xiso:** XboxDev.
+- **Linux/Vulkan port and performance work in this fork:**
+  [thefixinhixon](https://github.com/thefixinhixon), developed with Claude Code.
 
 This project is for **educational and preservation purposes**. It is not affiliated with Microsoft,
 Bandai Namco or Konami, and **it does not include any game code or assets**: you need your own legal
