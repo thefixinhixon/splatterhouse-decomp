@@ -16,6 +16,9 @@ runtime interpretation, and it runs at native speed (60 FPS).
 > reverse engineering and the game patches are the original author's work; see
 > [Linux port (this fork)](#linux-port-this-fork) for what this fork changes and
 > [Credits](#credits-and-legal-notice). The fork's default branch is `linux-port`.
+>
+> **Playing on Windows?** Use the original repository and its releases. This branch is Linux-only:
+> its Windows/D3D12 build isn't maintained or tested.
 
 ---
 
@@ -426,11 +429,12 @@ The build copies `librexruntimerd.so`, `librexgpu-xenosrd.so` and `libTracyClien
 executable. Don't rebuild while the game is running: replacing those files under a running game
 corrupts it.
 
-**Known limits:**
-- The Windows/D3D12 build hasn't been rebuilt or tested on this branch. Some SDK changes are shared
-  between the two backends.
-- `--sh_perf_log=true` prints per-frame performance counters (`[sh-perf]`) if you want to report a
-  slow scene.
+**Platform:** this branch targets Linux only. The Windows/D3D12 code from the original port is
+still in the tree, but it isn't built or tested here; Windows players should use
+[0c0de/splatterhouse-decomp](https://github.com/0c0de/splatterhouse-decomp).
+
+**Reporting a slow scene:** run with `--sh_perf_log=true`. It prints frame counters (`[sh-perf]`)
+to `splatterhouse.log` every 2 s.
 
 ## Project layout
 
