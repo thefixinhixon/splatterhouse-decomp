@@ -11,6 +11,12 @@ runtime interpretation, and it runs at native speed (60 FPS).
 
 **Status: playable end-to-end** — menus, full campaign, DLC, 60 FPS, localized text and ultrawide.
 
+> **This is a fork** of [0c0de/splatterhouse-decomp](https://github.com/0c0de/splatterhouse-decomp)
+> that adds a **native Linux build (Vulkan)** and performance fixes. The Windows/D3D12 port, the
+> reverse engineering and the game patches are the original author's work; see
+> [Linux port (this fork)](#linux-port-this-fork) for what this fork changes and
+> [Credits](#credits-and-legal-notice). The fork's default branch is `linux-port`.
+
 ---
 
 ## Quick start (what you need to do)
@@ -357,6 +363,75 @@ the docs and (if present) `shadercache\` into `splatterhouse-decomp-release\`, r
 deliberately does **not** ship a `splatterhouse.toml` so that `install.bat` can generate it on the
 user's machine with the right internal resolution for their GPU.
 
+## Linux port (this fork)
+
+The `linux-port` branch builds and runs the port natively on Linux with the SDK's **Vulkan**
+renderer. It needs the SDK fork [thefixinhixon/rexglue-sdk](https://github.com/thefixinhixon/rexglue-sdk)
+(branch `linux-port`), which `.gitmodules` already points at. Tested on Ubuntu with an AMD RX 6600
+(Mesa RADV) and an i7-6700K; the latest play session held 60 FPS (median) at 720p with FSR.
+
+**What it changes** (details and measurements in `AGENTS.md`, "Linux port"):
+
+- **Renderer:** Linux always uses Vulkan with the `fsi` render-target path (fragment shader
+  interlock, the Vulkan equivalent of ROV), so the GPU needs `VK_EXT_fragment_shader_interlock`.
+  The Vulkan texture-fetch exponent bias was read from the wrong fetch-constant word (the whole image
+  came out dark); fixed in the SDK.
+- **Level-load freeze:** a stale completion signal on the XCTD layer's event made
+  `GetOverlappedResult` return while a read was still pending, so a 64 KB block of a level file was
+  replaced by the previous one (`src/sh_overlapped_fix.cpp`).
+- **Performance:**
+  - Multi-object waits no longer spin.
+  - UI-only repaints are paced.
+  - Shader translation and pipeline creation never block the renderer (no first-play stutter).
+  - CPU vertex/index data is no longer re-uploaded every frame (`clear_memory_page_state=false`).
+  - Write-watch faults no longer parse `/proc/self/maps` under a global lock.
+
+  On the test machine the play-session median went from 33 to 60 FPS, and fights that used to
+  drop to ~20 FPS stay near 60.
+- **60 FPS patch:** game time now advances by the real frame time, so the game no longer slows
+  down when it drops below 60 FPS (`sh_60fps_realtime`).
+- **FSR:** spatial FSR/CAS (`present_effect = "fsr"` or `"cas"`) works on Vulkan without the
+  FidelityFX SDK.
+- **Other:**
+  - The 60 Hz guest vblank and the toml merge on save from the original author's private SDK
+    patches are re-applied.
+  - Level warp (`sh_warp`) works on Linux.
+  - The F5 menu is in English (Spanish selectable).
+  - The docs are translated to English.
+  - `tools/linux/headless_run.sh` runs the game under Xvfb for automated tests.
+
+**Build** (Clang 18+, CMake 3.25+, Ninja, Vulkan loader + Mesa or another driver with fragment
+shader interlock):
+
+```bash
+git clone -b linux-port https://github.com/thefixinhixon/splatterhouse-decomp.git
+cd splatterhouse-decomp
+git submodule update --init extern/rexglue-sdk
+git -C extern/rexglue-sdk submodule update --init --recursive
+# put the game in game/ as described above (default.xex, default.dec.xex, data/ ...);
+# extract-xiso is packaged for most distributions
+cmake --preset linux-amd64-relwithdebinfo
+cmake --build out/build/linux-amd64-relwithdebinfo -j$(nproc)   # ~15 min the first time
+```
+
+**Run**
+
+```bash
+cd out/build/linux-amd64-relwithdebinfo
+ln -s ../../../game assets        # once
+./splatterhouse                   # settings: F5 in game, saved to splatterhouse.toml here
+```
+
+The build copies `librexruntimerd.so`, `librexgpu-xenosrd.so` and `libTracyClientrd.so` next to the
+executable. Don't rebuild while the game is running: replacing those files under a running game
+corrupts it.
+
+**Known limits:**
+- The Windows/D3D12 build hasn't been rebuilt or tested on this branch. Some SDK changes are shared
+  between the two backends.
+- `--sh_perf_log=true` prints per-frame performance counters (`[sh-perf]`) if you want to report a
+  slow scene.
+
 ## Project layout
 
 ```
@@ -395,6 +470,13 @@ legacy/                     # old XenonRecomp runtime (reference only)
 - **extract-xiso** (xboxdev) and **XexTool** (xorloser) — ISO/XEX tools.
 - **60 FPS patch** — from `xenia-canary/game-patches` (author *illusion*), adapted to the recomp.
 - **FidelityFX / FSR** — AMD.
+- **Original port** — [0c0de](https://github.com/0c0de) (Jose Luis): the Windows port, the reverse
+  engineering, the game patches, the F5 menu, DLC support and the original SDK patches this fork
+  builds on.
+- **ReXGlue SDK** — [rexglue/rexglue-sdk](https://github.com/rexglue/rexglue-sdk) (Tom Clay and
+  contributors), licensed under the terms in `extern/rexglue-sdk/LICENSE`.
+- **Linux/Vulkan port and performance work in this fork** — [thefixinhixon](https://github.com/thefixinhixon),
+  developed with Claude Code.
 
 This project is for **educational and preservation purposes**. It is not affiliated with Microsoft,
 Bandai Namco or Konami, and **it does not include any game code or assets**: you need your own legal

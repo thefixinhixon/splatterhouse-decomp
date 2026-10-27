@@ -1,3 +1,3 @@
 [submodule "extern/rexglue-sdk"]
 	path = extern/rexglue-sdk
-	url = https://github.com/rexglue/rexglue-sdk.git
+	url = https://github.com/thefixinhixon/rexglue-sdk.git

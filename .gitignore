@@ -29,7 +29,9 @@ dump/
 XEX/
 default.xex
 *.iso
+*.ISO
 *.xiso
+/game
 
 # IDE
 .vs/

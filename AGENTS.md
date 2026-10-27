@@ -93,8 +93,8 @@ Claim a task by putting your agent name and date in **Owner** before starting, a
   - The XCTD compressed-block prefetch (`sub_829F40A8`/`sub_829F3FD8`): the SDK's `NtReadFile` completes synchronously, so the slot buffers are always filled before use.
   - File-object event semantics (`NtSetEvent`/`NtClearEvent` on an `XFile` handle are no-ops in the SDK, and `XFile::Read` signals the file even when the caller passed its own event): real differences from NT, but this path never waits on an `XFile`. Changing them made no difference.
   - User settings and the 1 kHz vblank (`vsync=false`).
-- **Heisenbug warning:** heavy instrumentation hides it. `src/sh_stream_diag.cpp` was actually **compiled into the `linux-port` build** (mutex + hash map on every queue push/pop and inflate, a copy of every read); this branch takes it out of `SPLATTERHOUSE_SOURCES`.
-- **Tools:** `src/sh_w1_probe.cpp` (not built): samples 8 words of the descriptor buffer when a read starts and completes, and logs `[w1] read completed but buffer unchanged` only for full-size reads. Hits at `pos 00000000` with no cascade are benign (same file read again into the same buffer). `src/sh_stream_diag.cpp` (not built): parser byte dumps (`SH_NIF_DUMP_DIR`, `SH_NIF_REF` + `PIN=2`) and the old heavy queue probes.
+- **Heisenbug warning:** heavy instrumentation hides it. `src/sh_stream_diag.cpp` was actually **compiled into the `linux-port` build** (mutex + hash map on every queue push/pop and inflate, a copy of every read); the W1 fix took it out of `SPLATTERHOUSE_SOURCES`.
+- **Tools (removed from the tree 2026-10-26, still in the `linux-port` history):** `src/sh_w1_probe.cpp`: samples 8 words of the descriptor buffer when a read starts and completes, and logs `[w1] read completed but buffer unchanged` only for full-size reads. Hits at `pos 00000000` with no cascade are benign (same file read again into the same buffer). `src/sh_stream_diag.cpp`: parser byte dumps (`SH_NIF_DUMP_DIR`, `SH_NIF_REF` + `PIN=2`) and the old heavy queue probes.
 
 ### W4: Linux performance (2026-10-25, Agent A)
 
@@ -136,21 +136,21 @@ Run each checkpoint headless with the harness and record the result (date, commi
 
 ### Multi-agent setup
 
-- **Branches:** the work lives on `linux-port` in both the main repo and `extern/rexglue-sdk` (committed 2026-10-25, **not pushed**). The SDK commit exists only in the local submodule, so worktrees must fetch it from there.
+- **Branches:** the work lives on `linux-port` in both the main repo and `extern/rexglue-sdk`, published on the forks [thefixinhixon/splatterhouse-decomp](https://github.com/thefixinhixon/splatterhouse-decomp) and [thefixinhixon/rexglue-sdk](https://github.com/thefixinhixon/rexglue-sdk) (`.gitmodules` points at the SDK fork). SDK commits that aren't pushed yet exist only in the main checkout's submodule, so worktrees fetch from there.
 - **One worktree and one build directory per agent:**
   ```bash
-  cd /mnt/sdb1/Games/splatterhouse-decomp
+  cd <main checkout>
   git worktree add -b <agent>/<task> ../sh-<agent> linux-port
   cd ../sh-<agent>
-  git config submodule.extern/rexglue-sdk.url /mnt/sdb1/Games/splatterhouse-decomp/extern/rexglue-sdk
+  git config submodule.extern/rexglue-sdk.url <main checkout>/extern/rexglue-sdk
   git -c protocol.file.allow=always submodule update --init extern/rexglue-sdk
   git -C extern/rexglue-sdk submodule update --init --recursive   # SDK third-party deps, from their public URLs
-  ln -s /mnt/sdb1/Games/splatterhouse-decomp/game game
+  ln -s "<main checkout>/game" game
   cmake --preset linux-amd64-relwithdebinfo && cmake --build out/build/linux-amd64-relwithdebinfo -j$(nproc)
   ```
   Each worktree needs its own `generated/` (codegen ~2.5 min, run by the first build) and full build (~15 min). Don't share `generated/` or a build directory between agents: codegen rewrites all 208 files and ninja relinks under other agents.
 - **SDK changes in a worktree:** commit them on a branch inside that worktree's `extern/rexglue-sdk`. To share them, fetch that branch into the main checkout's submodule (`git -C extern/rexglue-sdk fetch ../sh-<agent>/extern/rexglue-sdk <branch>`) and merge it into `linux-port` there, then commit the new submodule SHA in the main repo. Merge into `linux-port` only after the change passes C0 (and C1 if it touches W1).
-- `game/` (assets) is shared read-only: symlink it into each worktree (`ln -s /mnt/sdb1/Games/splatterhouse-decomp/game game`).
+- `game/` (assets) is shared read-only: symlink it into each worktree (`ln -s "<main checkout>/game" game`).
 - Pick a unique `DISPLAY_NUM` (and so a unique `RUN_DIR`) per agent. Run at most two headless games at once in total.
 - **Codegen changes are serialized:** announce them on the work board before touching `extern/rexglue-sdk/src/codegen/` or `config/codegen.toml`, because they change every generated file and conflict with everyone's builds.
 - **Hand-off:** when stopping, update the work board row and add any new facts to the W1 notes (or a new section). Keep `Ruled out` lists current so others don't repeat experiments.
